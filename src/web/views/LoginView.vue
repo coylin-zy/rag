@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bot, LockKeyhole, Mail } from "@lucide/vue";
+import { PhBookOpenText, PhCheckCircle, PhEnvelopeSimple, PhLockKey, PhRobot } from "@phosphor-icons/vue";
 import { ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
@@ -39,54 +39,57 @@ async function submit() {
 
 <template>
   <main class="login-page">
-    <section class="login-panel" aria-labelledby="login-title">
-      <div class="login-brand" aria-hidden="true"><Bot :size="27" /></div>
-      <p class="login-eyebrow">Agent Knowledge Service</p>
-      <h1 id="login-title">登录 Knowledge Core</h1>
-      <p class="login-intro">使用管理员账号进入知识库管理后台。</p>
+    <section class="login-context" aria-label="产品介绍">
+      <div class="login-context__brand">
+        <span class="login-context__mark"><PhRobot :size="30" weight="duotone" /></span>
+        <span><strong>Knowledge Core</strong><small>Agent knowledge service</small></span>
+      </div>
+      <div class="login-context__copy">
+        <p class="login-eyebrow">AI KNOWLEDGE OPERATIONS</p>
+        <h1>让 Agent 记住<br>真正可信的知识。</h1>
+        <p>在一个工作区内维护 Markdown、审核记忆、验证检索，并通过 MCP 安全交付给 Codex 与其他 Agent。</p>
+      </div>
+      <div class="login-context__flow" aria-label="知识流程">
+        <span><PhBookOpenText :size="18" />组织 Markdown</span>
+        <span><PhCheckCircle :size="18" />人工审核</span>
+        <span><PhRobot :size="18" />连接 Agent</span>
+      </div>
+      <p class="login-context__foot">R2 原文存储 · D1 元数据 · Vectorize 检索</p>
+    </section>
 
-      <form class="login-form" @submit.prevent="submit">
-        <div class="field">
-          <label for="login-email">管理员邮箱</label>
-          <div class="login-input-wrap">
-            <Mail :size="17" aria-hidden="true" />
-            <input
-              id="login-email"
-              v-model.trim="email"
-              class="input login-input"
-              type="email"
-              autocomplete="username"
-              inputmode="email"
-              required
-              autofocus
-            >
+    <section class="login-form-panel" aria-labelledby="login-title">
+      <div class="login-form-panel__inner">
+        <p class="login-eyebrow">管理员入口</p>
+        <h2 id="login-title">欢迎回来</h2>
+        <p class="login-intro">登录后继续维护 Agent 的长期知识。</p>
+
+        <form class="login-form" @submit.prevent="submit">
+          <div class="field">
+            <label for="login-email">管理员邮箱</label>
+            <div class="login-input-wrap">
+              <PhEnvelopeSimple :size="19" aria-hidden="true" />
+              <input id="login-email" v-model.trim="email" class="input login-input" type="email" autocomplete="username" inputmode="email" required autofocus>
+            </div>
           </div>
-        </div>
 
-        <div class="field">
-          <label for="login-password">密码</label>
-          <div class="login-input-wrap">
-            <LockKeyhole :size="17" aria-hidden="true" />
-            <input
-              id="login-password"
-              v-model="password"
-              class="input login-input"
-              type="password"
-              autocomplete="current-password"
-              required
-            >
+          <div class="field">
+            <div class="field-heading"><label for="login-password">密码</label><span>12 小时安全会话</span></div>
+            <div class="login-input-wrap">
+              <PhLockKey :size="19" aria-hidden="true" />
+              <input id="login-password" v-model="password" class="input login-input" type="password" autocomplete="current-password" required>
+            </div>
           </div>
-        </div>
 
-        <p v-if="errorMessage" class="login-error" role="alert">{{ errorMessage }}</p>
+          <p v-if="errorMessage" class="login-error" role="alert">{{ errorMessage }}</p>
 
-        <button class="button button--primary login-submit" type="submit" :disabled="submitting">
-          <span v-if="submitting" class="spinner" aria-hidden="true" />
-          {{ submitting ? '正在登录' : '登录' }}
-        </button>
-      </form>
+          <button class="button button--primary login-submit" type="submit" :disabled="submitting">
+            <span v-if="submitting" class="spinner" aria-hidden="true" />
+            {{ submitting ? '正在验证' : '进入知识工作区' }}
+          </button>
+        </form>
 
-      <p class="login-footnote">会话仅通过加密的 HttpOnly Cookie 保存，12 小时后自动过期。</p>
+        <p class="login-footnote">凭据只发送到你的 Cloudflare Worker，会话通过加密的 HttpOnly Cookie 保存。</p>
+      </div>
     </section>
   </main>
 </template>

@@ -77,7 +77,7 @@ async function runSearch() {
 <template>
   <div class="page-stack search-page">
     <div class="page-toolbar">
-      <div><h2>混合检索调试</h2><p>验证关键词、语义召回、RRF 融合与重排后的真实来源。</p></div>
+      <div><span class="page-eyebrow">RETRIEVAL LAB</span><h2>混合检索调试</h2><p>用真实问题验证关键词、语义召回、RRF 融合与重排后的来源。</p></div>
     </div>
 
     <form class="search-console surface" @submit.prevent="runSearch">

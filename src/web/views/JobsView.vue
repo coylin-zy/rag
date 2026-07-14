@@ -68,7 +68,7 @@ onBeforeUnmount(() => window.clearInterval(pollHandle));
 <template>
   <div class="page-stack jobs-page">
     <div class="page-toolbar">
-      <div><h2>索引任务</h2><p>观察 Markdown 切块、Embedding、Vectorize 写入和清理状态。</p></div>
+      <div><span class="page-eyebrow">INDEX PIPELINE</span><h2>索引任务</h2><p>观察 Markdown 切块、Embedding、Vectorize 写入和清理状态。</p></div>
       <div class="toolbar-actions"><button class="button button--secondary" type="button" :disabled="loading" @click="loadJobs()"><RefreshCw :size="17" />刷新</button></div>
     </div>
 

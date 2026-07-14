@@ -12,6 +12,7 @@
     "build:web": "vite build",
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.worker.json",
     "test": "node scripts/run-tests.mjs",
+    "test:web": "vitest run --config vitest.web.config.ts",
     "test:watch": "vitest",
     "test:e2e": "pnpm db:migrate:local && playwright test",
     "db:migrate:local": "wrangler d1 migrations apply knowledge-core-db --local",
@@ -23,6 +24,7 @@
   "dependencies": {
     "@lucide/vue": "^1.24.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@phosphor-icons/vue": "^2.2.1",
     "dompurify": "^3.4.12",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.30",

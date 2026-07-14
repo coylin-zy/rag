@@ -101,7 +101,7 @@ onMounted(loadTokens);
 <template>
   <div class="page-stack tokens-page">
     <div class="page-toolbar">
-      <div><h2>MCP 访问凭证</h2><p>按知识库和工具权限向 Agent 签发最小范围的访问令牌。</p></div>
+      <div><span class="page-eyebrow">AGENT ACCESS</span><h2>MCP 访问凭证</h2><p>按知识库和工具权限向 Agent 签发最小范围的访问令牌。</p></div>
       <div class="toolbar-actions">
         <button class="button button--secondary" type="button" :disabled="loading" @click="loadTokens"><RefreshCw :size="17" />刷新</button>
         <button class="button button--primary" type="button" :disabled="adminCollections.length === 0" @click="openCreate"><Plus :size="17" />创建 Token</button>

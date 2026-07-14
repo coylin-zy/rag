@@ -96,7 +96,7 @@ onMounted(loadProposals);
 <template>
   <div class="page-stack proposals-page">
     <div class="page-toolbar">
-      <div><h2>Agent 记忆审核</h2><p>Agent 只能提交提案；人工批准后才会进入正式知识和检索索引。</p></div>
+      <div><span class="page-eyebrow">MEMORY REVIEW</span><h2>Agent 记忆审核</h2><p>检查来源与 Markdown 变更；只有人工批准的提案才会进入正式知识。</p></div>
       <div class="toolbar-actions"><button class="button button--secondary" type="button" :disabled="loading" @click="loadProposals"><RefreshCw :size="17" />刷新</button></div>
     </div>
 

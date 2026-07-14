@@ -248,7 +248,11 @@ watch(
       await loadNotes(nextId);
     }
     const noteId = typeof routeNote === "string" ? routeNote : "";
-    if (noteId && selectedNote.value?.id !== noteId) await openNote(noteId, false);
+    if (noteId && selectedNote.value?.id !== noteId) {
+      await openNote(noteId, false);
+      return;
+    }
+    if (!noteId && notes.value.length > 0) await openNote(notes.value[0].id);
   },
   { immediate: true },
 );
@@ -264,37 +268,25 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", handleBeforeUnl
 </script>
 
 <template>
-  <div class="page-stack knowledge-page">
-    <div class="page-toolbar">
-      <div>
-        <h2>知识工作区</h2>
-        <p>管理经过审核的 Markdown，并保持 Agent 检索来源可追溯。</p>
-      </div>
-      <div class="toolbar-actions">
-        <button v-if="canAdmin" class="button button--secondary" type="button" @click="openMembers">
-          <Users :size="17" /> 成员
-        </button>
-        <button class="button button--secondary" type="button" @click="showCollectionModal = true">
-          <FolderPlus :size="17" /> 新建知识库
-        </button>
-        <button class="button button--primary" type="button" :disabled="!canEdit" @click="showNoteModal = true">
-          <FilePlus2 :size="17" /> 新建文档
-        </button>
-      </div>
-    </div>
+  <div class="knowledge-shell">
+    <aside class="knowledge-library" aria-label="知识库与文档">
+      <header class="library-header">
+        <div><span>工作空间</span><strong>知识库</strong></div>
+        <div class="library-header__actions">
+          <button class="icon-button icon-button--small" type="button" title="新建知识库" aria-label="新建知识库" @click="showCollectionModal = true"><FolderPlus :size="17" /></button>
+          <button class="icon-button icon-button--small" type="button" title="新建文档" aria-label="新建文档" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" /></button>
+        </div>
+      </header>
 
-    <section v-if="appStore.collections.length === 0" class="surface empty-state">
-      <div>
-        <div class="empty-state-icon"><BookOpenText :size="22" /></div>
-        <h3>还没有知识库</h3>
-        <p>创建第一个知识库后即可维护 Markdown、分配权限并连接 Agent。</p>
-        <button class="button button--primary" type="button" @click="showCollectionModal = true"><Plus :size="17" />创建知识库</button>
-      </div>
-    </section>
+      <label class="library-search">
+        <Search :size="16" aria-hidden="true" />
+        <span class="sr-only">筛选文档</span>
+        <input v-model="noteFilter" type="search" placeholder="搜索知识库或文档" />
+      </label>
 
-    <section v-else class="knowledge-layout surface">
-      <aside class="collection-pane" aria-label="知识库列表">
-        <div class="pane-heading"><span>知识库</span><span>{{ appStore.collections.length }}</span></div>
+      <section class="library-section">
+        <div class="library-section__label"><span>知识集合</span><span>{{ appStore.collections.length }}</span></div>
+        <div v-if="appStore.collections.length === 0" class="library-empty">创建第一个知识库，开始组织 Agent 的长期知识。</div>
         <button
           v-for="collection in appStore.collections"
           :key="collection.id"
@@ -306,17 +298,12 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", handleBeforeUnl
           <span class="collection-icon"><BookOpenText :size="16" /></span>
           <span><strong>{{ collection.name }}</strong><small>{{ collection.noteCount }} 篇文档 · {{ collection.role }}</small></span>
         </button>
-      </aside>
+      </section>
 
-      <aside class="note-pane" aria-label="文档列表">
-        <div class="pane-heading"><span>{{ selectedCollection?.name }}</span><span>{{ notes.length }}</span></div>
-        <label class="list-search">
-          <Search :size="16" aria-hidden="true" />
-          <span class="sr-only">筛选文档</span>
-          <input v-model="noteFilter" type="search" placeholder="筛选标题或标签" />
-        </label>
+      <section v-if="selectedCollection" class="library-section library-section--documents">
+        <div class="library-section__label"><span>{{ selectedCollection.name }}</span><span>{{ filteredNotes.length }}</span></div>
         <div v-if="loadingNotes" class="inline-loading"><LoaderCircle :size="17" class="spin-icon" />载入文档</div>
-        <div v-else-if="filteredNotes.length === 0" class="pane-empty">该知识库还没有可见文档</div>
+        <div v-else-if="filteredNotes.length === 0" class="library-empty">暂无符合条件的文档。</div>
         <button
           v-for="note in filteredNotes"
           v-else
@@ -330,46 +317,102 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", handleBeforeUnl
           <span class="note-tags">{{ note.tags.length ? note.tags.join(' · ') : '无标签' }}</span>
           <span class="note-date"><Clock3 :size="12" />{{ formatDate(note.updatedAt) }}</span>
         </button>
-      </aside>
+      </section>
 
-      <div class="editor-pane">
-        <div v-if="loadingNote" class="page-loading"><span class="spinner" />载入 Markdown</div>
-        <div v-else-if="!selectedNote" class="empty-state">
-          <div>
-            <div class="empty-state-icon"><PencilLine :size="22" /></div>
-            <h3>选择一篇文档</h3>
-            <p>在左侧选择文档以编辑 Markdown、查看预览或恢复历史版本。</p>
+      <button v-if="selectedCollection && canAdmin" class="library-members" type="button" @click="openMembers"><Users :size="16" />管理知识库成员</button>
+    </aside>
+
+    <section class="knowledge-canvas">
+      <header class="knowledge-topbar">
+        <div class="knowledge-heading">
+          <p><span>知识库</span><span>/</span><span>{{ selectedCollection?.name || '未创建知识库' }}</span></p>
+          <h2>{{ selectedNote?.title || '知识工作区' }}</h2>
+          <span v-if="selectedNote">v{{ selectedNote.version }} · {{ dirty ? '有未保存修改' : '已保存' }} · {{ formatDate(selectedNote.updatedAt) }}</span>
+          <span v-else>组织 Markdown，并保持 Agent 检索来源可追溯。</span>
+        </div>
+        <div class="knowledge-actions">
+          <button class="button button--secondary" type="button" @click="showCollectionModal = true"><FolderPlus :size="17" />新建知识库</button>
+          <button class="button button--secondary" type="button" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" />新建文档</button>
+          <button v-if="selectedNote" class="button button--primary" type="button" :disabled="!dirty || saving || !canEdit" @click="saveNote">
+            <span v-if="saving" class="spinner" /><Save v-else :size="17" />保存并索引
+          </button>
+        </div>
+      </header>
+
+      <div v-if="loadingNote" class="page-loading"><span class="spinner" />载入 Markdown</div>
+      <div v-else-if="appStore.collections.length === 0" class="knowledge-onboarding">
+        <div class="knowledge-onboarding__step">01</div>
+        <p>从可信来源开始</p>
+        <h3>创建第一个知识库</h3>
+        <span>知识库定义权限与 Agent 检索边界。之后可以维护 Markdown、审核记忆并通过 MCP 发布。</span>
+        <button class="button button--primary" type="button" @click="showCollectionModal = true"><Plus :size="17" />创建知识库</button>
+      </div>
+      <div v-else-if="!selectedNote" class="knowledge-onboarding">
+        <div class="knowledge-onboarding__step">02</div>
+        <p>{{ selectedCollection?.name }}</p>
+        <h3>{{ filteredNotes.length ? '选择一篇文档开始工作' : '创建第一篇 Markdown' }}</h3>
+        <span>{{ filteredNotes.length ? '你可以编辑内容、查看预览、恢复历史版本或重新触发索引。' : '结构化内容会保留来源、版本与索引状态，方便 Agent 安全检索。' }}</span>
+        <button v-if="!filteredNotes.length" class="button button--primary" type="button" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" />新建文档</button>
+      </div>
+      <template v-else>
+        <div class="editor-toolbar">
+          <div class="segmented" aria-label="编辑器视图">
+            <button type="button" :class="{ active: editorMode === 'write' }" @click="editorMode = 'write'"><PencilLine :size="15" /><span>编辑</span></button>
+            <button type="button" :class="{ active: editorMode === 'split' }" @click="editorMode = 'split'"><Settings2 :size="15" /><span>分栏</span></button>
+            <button type="button" :class="{ active: editorMode === 'preview' }" @click="editorMode = 'preview'"><Eye :size="15" /><span>预览</span></button>
+          </div>
+          <span class="editor-toolbar__type">Markdown</span>
+          <div class="editor-actions">
+            <button class="icon-button" type="button" title="版本记录" aria-label="版本记录" @click="openVersions"><History :size="18" /></button>
+            <button class="icon-button" type="button" title="重新索引" aria-label="重新索引" @click="reindexCurrentNote"><RefreshCw :size="18" /></button>
+            <button class="icon-button danger-icon" type="button" title="删除文档" aria-label="删除文档" @click="deleteCurrentNote"><Trash2 :size="18" /></button>
           </div>
         </div>
-        <template v-else>
-          <header class="editor-header">
-            <div class="editor-title">
-              <div><h3>{{ selectedNote.title }}</h3><span>v{{ selectedNote.version }} · {{ dirty ? '有未保存修改' : '已保存' }}</span></div>
-            </div>
-            <div class="editor-actions">
-              <div class="segmented" aria-label="编辑器视图">
-                <button type="button" :class="{ active: editorMode === 'write' }" @click="editorMode = 'write'"><PencilLine :size="15" /><span>编辑</span></button>
-                <button type="button" :class="{ active: editorMode === 'split' }" @click="editorMode = 'split'"><Settings2 :size="15" /><span>分栏</span></button>
-                <button type="button" :class="{ active: editorMode === 'preview' }" @click="editorMode = 'preview'"><Eye :size="15" /><span>预览</span></button>
-              </div>
-              <button class="icon-button" type="button" title="版本记录" aria-label="版本记录" @click="openVersions"><History :size="18" /></button>
-              <button class="icon-button" type="button" title="重新索引" aria-label="重新索引" @click="reindexCurrentNote"><RefreshCw :size="18" /></button>
-              <button class="icon-button danger-icon" type="button" title="删除文档" aria-label="删除文档" @click="deleteCurrentNote"><Trash2 :size="18" /></button>
-              <button class="button button--primary" type="button" :disabled="!dirty || saving || !canEdit" @click="saveNote">
-                <span v-if="saving" class="spinner" /><Save v-else :size="17" />保存
-              </button>
-            </div>
-          </header>
-          <div class="editor-workspace" :class="`editor-workspace--${editorMode}`">
-            <label v-if="editorMode !== 'preview'" class="markdown-editor">
-              <span class="sr-only">Markdown 内容</span>
-              <textarea v-model="editorValue" spellcheck="false" :readonly="!canEdit" />
-            </label>
-            <article v-if="editorMode !== 'write'" class="markdown-preview" v-html="previewHtml" />
-          </div>
-        </template>
-      </div>
+        <div class="editor-workspace" :class="`editor-workspace--${editorMode}`">
+          <label v-if="editorMode !== 'preview'" class="markdown-editor">
+            <span class="sr-only">Markdown 内容</span>
+            <textarea v-model="editorValue" spellcheck="false" :readonly="!canEdit" />
+          </label>
+          <article v-if="editorMode !== 'write'" class="markdown-preview" v-html="previewHtml" />
+        </div>
+      </template>
     </section>
+
+    <aside class="knowledge-inspector" aria-label="文档上下文">
+      <header><span>上下文</span><strong>{{ selectedNote ? '可追溯来源' : '知识生命周期' }}</strong></header>
+      <template v-if="selectedNote">
+        <section class="inspector-section">
+          <div class="inspector-section__heading"><strong>文档来源</strong><span>内部文档</span></div>
+          <dl>
+            <div><dt>知识库</dt><dd>{{ selectedCollection?.name }}</dd></div>
+            <div><dt>资源 ID</dt><dd class="mono">{{ selectedNote.id.slice(0, 14) }}</dd></div>
+            <div><dt>作者</dt><dd>{{ selectedNote.updatedBy }}</dd></div>
+            <div><dt>最后更新</dt><dd>{{ formatDate(selectedNote.updatedAt) }}</dd></div>
+          </dl>
+        </section>
+        <section class="inspector-section">
+          <div class="inspector-section__heading"><strong>索引状态</strong><StatusBadge :status="selectedNote.indexedVersion === selectedNote.version ? 'ready' : 'queued'" /></div>
+          <dl>
+            <div><dt>当前版本</dt><dd>v{{ selectedNote.version }}</dd></div>
+            <div><dt>已索引版本</dt><dd>v{{ selectedNote.indexedVersion ?? '—' }}</dd></div>
+          </dl>
+          <button class="button button--secondary inspector-action" type="button" @click="reindexCurrentNote"><RefreshCw :size="16" />重新索引</button>
+        </section>
+        <section class="inspector-section">
+          <div class="inspector-section__heading"><strong>标签</strong><span>{{ selectedNote.tags.length }}</span></div>
+          <div class="tag-row"><span v-for="tag in selectedNote.tags" :key="tag" class="tag">{{ tag }}</span><span v-if="!selectedNote.tags.length" class="inspector-muted">暂无标签</span></div>
+        </section>
+        <section class="inspector-section">
+          <div class="inspector-section__heading"><strong>MCP 可访问客户端</strong><span>只读</span></div>
+          <div class="client-list"><span><i />Codex</span><span><i />Claude Desktop</span><span><i />内部 Agent</span></div>
+        </section>
+      </template>
+      <div v-else class="inspector-guide">
+        <span>01</span><strong>维护 Markdown</strong><p>所有正式知识保留稳定 ID、版本与来源。</p>
+        <span>02</span><strong>审核 Agent 记忆</strong><p>只有人工批准的提案才进入正式知识。</p>
+        <span>03</span><strong>发布给 MCP</strong><p>通过最小权限 Token 控制 Agent 的读取范围。</p>
+      </div>
+    </aside>
   </div>
 
   <ModalDialog v-if="showCollectionModal" title="新建知识库" description="知识库是权限和 Agent 检索范围的边界。" @close="showCollectionModal = false">

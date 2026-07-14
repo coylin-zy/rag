@@ -32,6 +32,7 @@ export default defineConfig(async () => {
     test: {
       setupFiles: ["./tests/setup.ts"],
       include: ["tests/**/*.test.ts"],
+      exclude: ["tests/web/**/*.test.ts"],
       testTimeout: 15_000,
       hookTimeout: 15_000,
     },

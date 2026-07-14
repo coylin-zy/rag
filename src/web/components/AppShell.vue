@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import {
-  BookOpenText,
-  Bot,
-  DatabaseZap,
-  KeyRound,
-  LogOut,
-  Menu,
-  Search,
-  ShieldCheck,
-  X,
-} from "@lucide/vue";
+  PhBookOpenText,
+  PhGearSix,
+  PhKey,
+  PhMagnifyingGlass,
+  PhRobot,
+  PhShieldCheck,
+  PhSignOut,
+  PhStack,
+  PhX,
+} from "@phosphor-icons/vue";
 import { computed, nextTick, ref, watch } from "vue";
 import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
 
@@ -21,15 +21,14 @@ const appStore = useAppStore();
 const mobileOpen = ref(false);
 const loggingOut = ref(false);
 
-const pageTitle = computed(() => String(route.meta.title ?? "Knowledge Core"));
 const initials = computed(() => appStore.userEmail.slice(0, 2).toUpperCase() || "KC");
 
 const navigation = [
-  { to: "/knowledge", label: "知识库", icon: BookOpenText },
-  { to: "/search", label: "检索调试", icon: Search },
-  { to: "/proposals", label: "记忆审核", icon: ShieldCheck },
-  { to: "/tokens", label: "MCP Token", icon: KeyRound },
-  { to: "/jobs", label: "索引任务", icon: DatabaseZap },
+  { to: "/knowledge", label: "知识库", icon: PhBookOpenText },
+  { to: "/search", label: "检索调试", icon: PhMagnifyingGlass },
+  { to: "/proposals", label: "记忆审核", icon: PhShieldCheck },
+  { to: "/tokens", label: "MCP Token", icon: PhKey },
+  { to: "/jobs", label: "索引任务", icon: PhStack },
 ];
 
 async function logout() {
@@ -52,57 +51,39 @@ watch(() => route.fullPath, async () => {
 
 <template>
   <div class="app-layout">
-    <aside class="sidebar" :class="{ 'sidebar--open': mobileOpen }" aria-label="主导航">
-      <div class="brand-block">
-        <div class="brand-mark" aria-hidden="true"><Bot :size="20" /></div>
-        <div>
-          <strong>Knowledge Core</strong>
-          <span>Agent knowledge service</span>
-        </div>
-        <button class="icon-button sidebar-close" type="button" aria-label="关闭导航" @click="mobileOpen = false">
-          <X :size="20" />
+    <aside class="product-rail" :class="{ 'product-rail--open': mobileOpen }" aria-label="主导航">
+      <div class="product-brand" data-testid="knowledge-core-brand">
+        <div class="product-brand__mark" aria-hidden="true"><PhRobot :size="25" weight="duotone" /></div>
+        <div class="product-brand__name"><strong>Knowledge</strong><span>Core</span></div>
+        <button class="icon-button product-rail__close" type="button" aria-label="关闭导航" @click="mobileOpen = false">
+          <PhX :size="20" />
         </button>
       </div>
 
-      <nav class="nav-list">
-        <RouterLink v-for="item in navigation" :key="item.to" :to="item.to" class="nav-item">
-          <component :is="item.icon" :size="19" />
+      <nav class="product-nav">
+        <RouterLink v-for="item in navigation" :key="item.to" :to="item.to" class="product-nav__item">
+          <component :is="item.icon" :size="24" weight="regular" />
           <span>{{ item.label }}</span>
         </RouterLink>
       </nav>
 
-      <div class="sidebar-footer">
-        <div class="user-avatar">{{ initials }}</div>
-        <div class="user-meta">
-          <strong>{{ appStore.userEmail || '正在验证身份' }}</strong>
-          <span>HTTPS 管理会话</span>
+      <div class="product-rail__footer">
+        <div class="worker-indicator" title="Cloudflare Worker 在线"><span aria-hidden="true" />在线</div>
+        <button class="rail-utility" type="button" aria-label="设置"><PhGearSix :size="21" /></button>
+        <div class="rail-account">
+          <div class="user-avatar">{{ initials }}</div>
+          <div class="rail-account__meta"><strong>{{ appStore.userEmail || '正在验证身份' }}</strong><span>管理员</span></div>
+          <button class="rail-utility" type="button" aria-label="退出登录" :disabled="loggingOut" @click="logout"><PhSignOut :size="20" /></button>
         </div>
-        <button
-          class="icon-button sidebar-logout"
-          type="button"
-          aria-label="退出登录"
-          :disabled="loggingOut"
-          @click="logout"
-        >
-          <LogOut :size="18" />
-        </button>
       </div>
     </aside>
 
     <button v-if="mobileOpen" class="sidebar-scrim" type="button" aria-label="关闭导航" @click="mobileOpen = false" />
 
     <div class="workspace">
-      <header class="topbar">
-        <button class="icon-button menu-button" type="button" aria-label="打开导航" @click="mobileOpen = true">
-          <Menu :size="21" />
-        </button>
-        <div>
-          <p class="topbar-kicker">Agent Knowledge</p>
-          <h1>{{ pageTitle }}</h1>
-        </div>
-        <div class="service-state"><span aria-hidden="true" /> Worker 在线</div>
-      </header>
-
+      <button class="mobile-nav-trigger" type="button" aria-label="打开导航" @click="mobileOpen = true">
+        <PhRobot :size="22" weight="duotone" />
+      </button>
       <main id="main-content" class="main-content" tabindex="-1">
         <div v-if="appStore.loading && !appStore.initialized" class="page-loading" aria-live="polite">
           <span class="spinner" /> 正在载入知识空间
