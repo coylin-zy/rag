@@ -1,0 +1,65 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "knowledge-core-test",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "alias": {
+    "@shared/contracts": "./src/shared/contracts.ts",
+    "@shared/markdown": "./src/shared/markdown.ts",
+    "@worker": "./src/worker"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "knowledge-core-test-db",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "NOTES",
+      "bucket_name": "knowledge-core-test-notes"
+    }
+  ],
+  "vectorize": [
+    {
+      "binding": "VECTOR_INDEX",
+      "index_name": "knowledge-core-test-v1"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "INDEX_QUEUE",
+        "queue": "knowledge-core-test-index"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "knowledge-core-test-index",
+        "max_batch_size": 5,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "dead_letter_queue": "knowledge-core-test-index-dlq"
+      }
+    ]
+  },
+  "vars": {
+    "ENVIRONMENT": "development",
+    "DEV_AUTH_BYPASS": "true",
+    "BOOTSTRAP_ADMIN_EMAILS": "admin@example.com",
+    "ADMIN_LOGIN_EMAIL": "admin@example.com",
+    "ADMIN_LOGIN_PASSWORD_HASH": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+    "ADMIN_SESSION_SECRET": "test-session-secret-that-is-long-enough",
+    "ADMIN_PROXY_SECRET": "test-proxy-secret",
+    "ADMIN_ORIGIN": "http://127.0.0.1:5176",
+    "CF_ACCESS_TEAM_DOMAIN": "",
+    "CF_ACCESS_AUD": "",
+    "EMBEDDING_BASE_URL": "",
+    "EMBEDDING_MODEL": "",
+    "RERANK_BASE_URL": "",
+    "RERANK_MODEL": ""
+  }
+}

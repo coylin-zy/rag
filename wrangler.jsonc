@@ -1,0 +1,78 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "knowledge-core",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "alias": {
+    "@shared/contracts": "./src/shared/contracts.ts",
+    "@shared/markdown": "./src/shared/markdown.ts",
+    "@worker": "./src/worker"
+  },
+  "routes": [
+    {
+      "pattern": "rag-api.coylin.com",
+      "custom_domain": true
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "knowledge-core-db",
+      "database_id": "525c0113-7fb1-41bb-9221-c82de4ec2473",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "NOTES",
+      "bucket_name": "knowledge-core-notes"
+    }
+  ],
+  "vectorize": [
+    {
+      "binding": "VECTOR_INDEX",
+      "index_name": "knowledge-core-v1"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "INDEX_QUEUE",
+        "queue": "knowledge-core-index"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "knowledge-core-index",
+        "max_batch_size": 5,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "dead_letter_queue": "knowledge-core-index-dlq"
+      }
+    ]
+  },
+  "triggers": {
+    "crons": ["17 3 * * *"]
+  },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "DEV_AUTH_BYPASS": "false",
+    "BOOTSTRAP_ADMIN_EMAILS": "admin@coylin.com",
+    "ADMIN_LOGIN_EMAIL": "admin@coylin.com",
+    "ADMIN_ORIGIN": "https://rag.coylin.com",
+    "CF_ACCESS_TEAM_DOMAIN": "",
+    "CF_ACCESS_AUD": "",
+    "EMBEDDING_BASE_URL": "",
+    "EMBEDDING_MODEL": "@cf/baai/bge-m3",
+    "RERANK_BASE_URL": "",
+    "RERANK_MODEL": ""
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.wrangler/
+.wrangler-dist/
+.dev.vars
+playwright-report/
+test-results/
+coverage/
+output/playwright/
+.playwright-cli/
+output/*.tar.gz
+*.local
+*.log
