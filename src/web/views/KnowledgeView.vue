@@ -114,6 +114,7 @@ function closeMobilePanels(restoreFocus = true) {
 
 function syncMobileLayout(query: MediaQueryList | MediaQueryListEvent) {
   isMobileLayout.value = query.matches;
+  if (query.matches && editorMode.value === "split") editorMode.value = "write";
   if (!query.matches) closeMobilePanels(false);
 }
 
@@ -314,10 +315,9 @@ onMounted(() => {
   window.addEventListener("beforeunload", handleBeforeUnload);
   document.addEventListener("keydown", handleGlobalKeydown);
   if (typeof window.matchMedia === "function") {
-    mobileMediaQuery = window.matchMedia("(max-width: 720px)");
+    mobileMediaQuery = window.matchMedia("(max-width: 720px), (max-height: 500px) and (max-width: 950px) and (pointer: coarse)");
     syncMobileLayout(mobileMediaQuery);
     mobileMediaQuery.addEventListener("change", syncMobileLayout);
-    if (mobileMediaQuery.matches) editorMode.value = "write";
   }
 });
 onBeforeUnmount(() => {
@@ -355,7 +355,7 @@ onBeforeUnmount(() => {
         <input v-model="noteFilter" type="search" placeholder="搜索知识库或文档" />
       </label>
 
-      <section class="library-section">
+      <section class="library-section library-section--collections">
         <div class="library-section__label"><span>知识集合</span><span>{{ appStore.collections.length }}</span></div>
         <div v-if="appStore.collections.length === 0" class="library-empty">创建第一个知识库，开始组织 Agent 的长期知识。</div>
         <button
@@ -395,27 +395,6 @@ onBeforeUnmount(() => {
 
     <section class="knowledge-canvas">
       <header class="knowledge-topbar">
-        <div class="knowledge-mobile-tools" aria-label="移动工作区面板">
-          <button
-            ref="mobileLibraryTrigger"
-            class="button button--secondary"
-            type="button"
-            aria-controls="knowledge-library"
-            :aria-expanded="mobileLibraryOpen"
-            data-testid="mobile-library-trigger"
-            @click="openMobileLibrary"
-          ><PanelLeft :size="18" />文档<span>{{ filteredNotes.length }}</span></button>
-          <button
-            ref="mobileInspectorTrigger"
-            class="button button--secondary"
-            type="button"
-            aria-controls="knowledge-inspector"
-            :aria-expanded="mobileInspectorOpen"
-            :disabled="!selectedNote"
-            data-testid="mobile-inspector-trigger"
-            @click="openMobileInspector"
-          ><PanelRight :size="18" />上下文</button>
-        </div>
         <div class="knowledge-heading">
           <p><span>知识库</span><span>/</span><span>{{ selectedCollection?.name || '未创建知识库' }}</span></p>
           <h2>{{ selectedNote?.title || '知识工作区' }}</h2>
@@ -424,9 +403,9 @@ onBeforeUnmount(() => {
         </div>
         <div class="knowledge-actions">
           <button class="button button--secondary knowledge-create-collection" type="button" @click="showCollectionModal = true"><FolderPlus :size="17" />新建知识库</button>
-          <button class="button button--secondary" type="button" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" />新建文档</button>
-          <button v-if="selectedNote" class="button button--primary" type="button" :disabled="!dirty || saving || !canEdit" @click="saveNote">
-            <span v-if="saving" class="spinner" /><Save v-else :size="17" />保存并索引
+          <button class="button button--secondary knowledge-create-note" type="button" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" />新建文档</button>
+          <button v-if="selectedNote" class="button button--primary knowledge-save" type="button" :disabled="!dirty || saving || !canEdit" @click="saveNote">
+            <span v-if="saving" class="spinner" /><Save v-else :size="17" /><span class="save-label-desktop">保存并索引</span><span class="save-label-mobile">保存</span>
           </button>
         </div>
       </header>
@@ -460,7 +439,7 @@ onBeforeUnmount(() => {
             <button class="icon-button danger-icon" type="button" title="删除文档" aria-label="删除文档" @click="deleteCurrentNote"><Trash2 :size="18" /></button>
           </div>
         </div>
-        <div class="editor-workspace" :class="`editor-workspace--${editorMode}`">
+        <div id="knowledge-editor-workspace" class="editor-workspace" :class="`editor-workspace--${editorMode}`">
           <label v-if="editorMode !== 'preview'" class="markdown-editor">
             <span class="sr-only">Markdown 内容</span>
             <textarea v-model="editorValue" spellcheck="false" :readonly="!canEdit" />
@@ -514,6 +493,48 @@ onBeforeUnmount(() => {
         <span>03</span><strong>发布给 MCP</strong><p>通过最小权限 Token 控制 Agent 的读取范围。</p>
       </div>
     </aside>
+
+    <nav class="knowledge-mobile-dock" aria-label="知识库移动工具栏">
+      <button
+        ref="mobileLibraryTrigger"
+        class="mobile-dock-item"
+        type="button"
+        aria-controls="knowledge-library"
+        :aria-expanded="mobileLibraryOpen"
+        data-testid="mobile-library-trigger"
+        @click="openMobileLibrary"
+      ><PanelLeft :size="20" /><span>文档</span><small>{{ filteredNotes.length }}</small></button>
+      <button
+        class="mobile-dock-item"
+        :class="{ active: editorMode === 'write' }"
+        type="button"
+        aria-controls="knowledge-editor-workspace"
+        :aria-pressed="editorMode === 'write'"
+        :disabled="!selectedNote"
+        data-testid="mobile-write-trigger"
+        @click="editorMode = 'write'"
+      ><PencilLine :size="20" /><span>编辑</span></button>
+      <button
+        class="mobile-dock-item"
+        :class="{ active: editorMode === 'preview' }"
+        type="button"
+        aria-controls="knowledge-editor-workspace"
+        :aria-pressed="editorMode === 'preview'"
+        :disabled="!selectedNote"
+        data-testid="mobile-preview-trigger"
+        @click="editorMode = 'preview'"
+      ><Eye :size="20" /><span>预览</span></button>
+      <button
+        ref="mobileInspectorTrigger"
+        class="mobile-dock-item"
+        type="button"
+        aria-controls="knowledge-inspector"
+        :aria-expanded="mobileInspectorOpen"
+        :disabled="!selectedNote"
+        data-testid="mobile-inspector-trigger"
+        @click="openMobileInspector"
+      ><PanelRight :size="20" /><span>信息</span></button>
+    </nav>
 
     <button v-if="mobileDrawerOpen" class="knowledge-mobile-scrim" type="button" aria-label="关闭移动面板" @click="closeMobilePanels()" />
   </div>

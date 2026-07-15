@@ -93,6 +93,8 @@ describe("redesigned workspace shell", () => {
     const wrapper = mount(KnowledgeView, { global: { plugins: [router] } });
     const libraryTrigger = wrapper.get('[data-testid="mobile-library-trigger"]');
 
+    expect(wrapper.find(".knowledge-mobile-dock").exists()).toBe(true);
+    expect(wrapper.findAll(".mobile-dock-item")).toHaveLength(4);
     expect(libraryTrigger.attributes("aria-controls")).toBe("knowledge-library");
     expect(libraryTrigger.attributes("aria-expanded")).toBe("false");
     await libraryTrigger.trigger("click");
@@ -154,6 +156,14 @@ describe("redesigned workspace shell", () => {
 
     expect(router.currentRoute.value.fullPath).toBe("/knowledge/collection-1/notes/note-1");
     expect(wrapper.find(".markdown-editor").exists()).toBe(true);
+    const previewTrigger = wrapper.get('[data-testid="mobile-preview-trigger"]');
+    await previewTrigger.trigger("click");
+    expect(previewTrigger.attributes("aria-pressed")).toBe("true");
+    expect(wrapper.find(".markdown-editor").exists()).toBe(false);
+    expect(wrapper.find(".markdown-preview").exists()).toBe(true);
+    await wrapper.get('[data-testid="mobile-write-trigger"]').trigger("click");
+    expect(wrapper.find(".markdown-editor").exists()).toBe(true);
+    expect(wrapper.find(".markdown-preview").exists()).toBe(false);
     const inspectorTrigger = wrapper.get('[data-testid="mobile-inspector-trigger"]');
     expect(inspectorTrigger.attributes("aria-expanded")).toBe("false");
     await inspectorTrigger.trigger("click");
