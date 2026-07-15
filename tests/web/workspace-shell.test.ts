@@ -6,8 +6,10 @@ import { createMemoryHistory, createRouter } from "vue-router";
 import AppShell from "@web/components/AppShell.vue";
 import { api } from "@web/lib/api";
 import { useAppStore } from "@web/stores/app";
+import JobsView from "@web/views/JobsView.vue";
 import KnowledgeView from "@web/views/KnowledgeView.vue";
 import LoginView from "@web/views/LoginView.vue";
+import TokensView from "@web/views/TokensView.vue";
 
 vi.mock("@web/lib/api", () => ({
   api: vi.fn(async () => []),
@@ -80,6 +82,30 @@ describe("redesigned workspace shell", () => {
     expect(wrapper.find(".knowledge-inspector").exists()).toBe(true);
   });
 
+  it("exposes mobile document and context drawers with explicit expanded state", async () => {
+    const router = createTestRouter();
+    await router.push("/knowledge");
+    await router.isReady();
+    const store = useAppStore();
+    store.initialized = true;
+    store.collections = [];
+
+    const wrapper = mount(KnowledgeView, { global: { plugins: [router] } });
+    const libraryTrigger = wrapper.get('[data-testid="mobile-library-trigger"]');
+
+    expect(libraryTrigger.attributes("aria-controls")).toBe("knowledge-library");
+    expect(libraryTrigger.attributes("aria-expanded")).toBe("false");
+    await libraryTrigger.trigger("click");
+    await flushPromises();
+    expect(libraryTrigger.attributes("aria-expanded")).toBe("true");
+    expect(wrapper.get("#knowledge-library").classes()).toContain("knowledge-library--open");
+
+    await wrapper.get('[aria-label="关闭文档面板"]').trigger("click");
+    await flushPromises();
+    expect(libraryTrigger.attributes("aria-expanded")).toBe("false");
+    wrapper.unmount();
+  });
+
   it("opens the first document when entering a populated collection", async () => {
     const router = createTestRouter();
     await router.push("/knowledge/collection-1");
@@ -128,5 +154,69 @@ describe("redesigned workspace shell", () => {
 
     expect(router.currentRoute.value.fullPath).toBe("/knowledge/collection-1/notes/note-1");
     expect(wrapper.find(".markdown-editor").exists()).toBe(true);
+    const inspectorTrigger = wrapper.get('[data-testid="mobile-inspector-trigger"]');
+    expect(inspectorTrigger.attributes("aria-expanded")).toBe("false");
+    await inspectorTrigger.trigger("click");
+    await flushPromises();
+    expect(inspectorTrigger.attributes("aria-expanded")).toBe("true");
+    expect(wrapper.get("#knowledge-inspector").classes()).toContain("knowledge-inspector--open");
+    await wrapper.get('[aria-label="关闭上下文面板"]').trigger("click");
+    wrapper.unmount();
+  });
+
+  it("labels Token table cells for the mobile card layout", async () => {
+    const store = useAppStore();
+    store.initialized = true;
+    store.collections = [{
+      id: "collection-1",
+      name: "Agent handbook",
+      description: "",
+      role: "admin",
+      noteCount: 1,
+      updatedAt: "2026-07-14T08:00:00.000Z",
+    }];
+    vi.mocked(api).mockResolvedValue([{
+      id: "token-1",
+      name: "Codex",
+      prefix: "kc_test",
+      collectionIds: ["collection-1"],
+      scopes: ["knowledge:read"],
+      createdAt: "2026-07-14T08:00:00.000Z",
+      createdBy: "admin@coylin.com",
+      expiresAt: null,
+      lastUsedAt: null,
+      revokedAt: null,
+    }]);
+
+    const wrapper = mount(TokensView);
+    await flushPromises();
+
+    expect(wrapper.findAll("tbody td").map((cell) => cell.attributes("data-label"))).toEqual([
+      "名称", "知识库", "权限", "最近使用", "状态", "操作",
+    ]);
+    wrapper.unmount();
+  });
+
+  it("labels job table cells for the mobile card layout", async () => {
+    vi.mocked(api).mockResolvedValue([{
+      id: "job-1",
+      noteId: "note-123456789",
+      version: 2,
+      type: "index",
+      status: "failed",
+      attempts: 2,
+      lastError: "Vectorize timeout",
+      createdAt: "2026-07-14T08:00:00.000Z",
+      updatedAt: "2026-07-14T08:01:00.000Z",
+      completedAt: null,
+    }]);
+
+    const wrapper = mount(JobsView);
+    await flushPromises();
+
+    expect(wrapper.findAll("tbody td").map((cell) => cell.attributes("data-label"))).toEqual([
+      "文档", "类型", "状态", "尝试", "更新时间", "错误", "操作",
+    ]);
+    wrapper.unmount();
   });
 });

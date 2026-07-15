@@ -117,17 +117,17 @@ onMounted(loadTokens);
       <div class="section-header"><div><h3>有效 Token</h3><p>{{ activeTokens.length }} 个可用凭证</p></div></div>
       <div v-if="loading" class="page-loading"><span class="spinner" />载入 Token</div>
       <div v-else-if="tokens.length === 0" class="empty-state"><div><div class="empty-state-icon"><KeyRound :size="22" /></div><h3>还没有 MCP Token</h3><p>创建 Token 后即可把受限知识库连接到 Codex 或其他 MCP 客户端。</p></div></div>
-      <div v-else class="data-table-wrap">
-        <table class="data-table">
+      <div v-else class="data-table-wrap data-table-wrap--cards">
+        <table class="data-table data-table--cards">
           <thead><tr><th>名称</th><th>知识库</th><th>权限</th><th>最近使用</th><th>状态</th><th aria-label="操作" /></tr></thead>
           <tbody>
             <tr v-for="token in tokens" :key="token.id">
-              <td><div class="table-title">{{ token.name }}</div><div class="table-meta mono">{{ token.prefix }}...</div></td>
-              <td><div class="tag-row"><span v-for="id in token.collectionIds" :key="id" class="tag">{{ collectionName(id) }}</span></div></td>
-              <td><div class="scope-list"><span v-for="scope in token.scopes" :key="scope"><ShieldCheck :size="13" />{{ scope }}</span></div></td>
-              <td><div>{{ formatDate(token.lastUsedAt) }}</div><div v-if="token.expiresAt" class="table-meta">到期 {{ formatDate(token.expiresAt) }}</div></td>
-              <td><span class="token-state" :class="token.revokedAt ? 'token-state--revoked' : 'token-state--active'">{{ token.revokedAt ? '已撤销' : '有效' }}</span></td>
-              <td><div class="table-actions"><button class="icon-button icon-button--small" type="button" title="撤销 Token" aria-label="撤销 Token" :disabled="Boolean(token.revokedAt)" @click="revoke(token.id, token.name)"><Trash2 :size="16" /></button></div></td>
+              <td data-label="名称"><div class="table-title">{{ token.name }}</div><div class="table-meta mono">{{ token.prefix }}...</div></td>
+              <td data-label="知识库"><div class="tag-row"><span v-for="id in token.collectionIds" :key="id" class="tag">{{ collectionName(id) }}</span></div></td>
+              <td data-label="权限"><div class="scope-list"><span v-for="scope in token.scopes" :key="scope"><ShieldCheck :size="13" />{{ scope }}</span></div></td>
+              <td data-label="最近使用"><div>{{ formatDate(token.lastUsedAt) }}</div><div v-if="token.expiresAt" class="table-meta">到期 {{ formatDate(token.expiresAt) }}</div></td>
+              <td data-label="状态"><span class="token-state" :class="token.revokedAt ? 'token-state--revoked' : 'token-state--active'">{{ token.revokedAt ? '已撤销' : '有效' }}</span></td>
+              <td data-label="操作"><div class="table-actions"><button class="icon-button icon-button--small" type="button" title="撤销 Token" aria-label="撤销 Token" :disabled="Boolean(token.revokedAt)" @click="revoke(token.id, token.name)"><Trash2 :size="16" /></button></div></td>
             </tr>
           </tbody>
         </table>

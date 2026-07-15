@@ -7,6 +7,8 @@ import {
   FolderPlus,
   History,
   LoaderCircle,
+  PanelLeft,
+  PanelRight,
   PencilLine,
   Plus,
   RefreshCw,
@@ -15,6 +17,7 @@ import {
   Settings2,
   Trash2,
   Users,
+  X,
 } from "@lucide/vue";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
@@ -47,6 +50,12 @@ const loadingNote = ref(false);
 const saving = ref(false);
 const noteFilter = ref("");
 const editorMode = ref<"write" | "split" | "preview">("split");
+const mobileLibraryOpen = ref(false);
+const mobileInspectorOpen = ref(false);
+const isMobileLayout = ref(false);
+const mobileLibraryTrigger = ref<HTMLButtonElement | null>(null);
+const mobileInspectorTrigger = ref<HTMLButtonElement | null>(null);
+let mobileMediaQuery: MediaQueryList | undefined;
 
 const showCollectionModal = ref(false);
 const collectionForm = ref({ name: "", description: "" });
@@ -64,6 +73,7 @@ const selectedCollection = computed(() => appStore.collections.find((item) => it
 const canEdit = computed(() => selectedCollection.value?.role === "admin" || selectedCollection.value?.role === "editor");
 const canAdmin = computed(() => selectedCollection.value?.role === "admin");
 const dirty = computed(() => Boolean(selectedNote.value && editorValue.value !== selectedNote.value.markdown));
+const mobileDrawerOpen = computed(() => mobileLibraryOpen.value || mobileInspectorOpen.value);
 const previewHtml = computed(() => DOMPurify.sanitize(marked.parse(stripFrontmatter(editorValue.value), { async: false }) as string));
 const filteredNotes = computed(() => {
   const query = noteFilter.value.trim().toLowerCase();
@@ -77,7 +87,34 @@ function formatDate(value: string) {
 
 function routeToCollection(collectionId: string) {
   if (dirty.value && !window.confirm("当前文档有未保存修改，确定离开吗？")) return;
+  mobileLibraryOpen.value = false;
   void router.push(`/knowledge/${collectionId}`);
+}
+
+async function openMobileLibrary() {
+  mobileInspectorOpen.value = false;
+  mobileLibraryOpen.value = true;
+  await nextTick();
+  document.querySelector<HTMLElement>("#knowledge-library .drawer-close")?.focus();
+}
+
+async function openMobileInspector() {
+  mobileLibraryOpen.value = false;
+  mobileInspectorOpen.value = true;
+  await nextTick();
+  document.querySelector<HTMLElement>("#knowledge-inspector .drawer-close")?.focus();
+}
+
+function closeMobilePanels(restoreFocus = true) {
+  const returnTarget = mobileInspectorOpen.value ? mobileInspectorTrigger.value : mobileLibraryTrigger.value;
+  mobileLibraryOpen.value = false;
+  mobileInspectorOpen.value = false;
+  if (restoreFocus) void nextTick(() => returnTarget?.focus());
+}
+
+function syncMobileLayout(query: MediaQueryList | MediaQueryListEvent) {
+  isMobileLayout.value = query.matches;
+  if (!query.matches) closeMobilePanels(false);
 }
 
 async function loadNotes(collectionId: string, resetSelection = true) {
@@ -102,8 +139,10 @@ async function openNote(noteId: string, updateRoute = true) {
     const detail = await api<NoteDetail>(`/api/v1/notes/${noteId}`);
     selectedNote.value = detail;
     editorValue.value = detail.markdown;
+    mobileLibraryOpen.value = false;
     if (updateRoute) await router.push(`/knowledge/${detail.collectionId}/notes/${detail.id}`);
     await nextTick();
+    if (isMobileLayout.value) mobileLibraryTrigger.value?.focus();
   } catch (error) {
     toast.show(error instanceof Error ? error.message : "文档加载失败", "error");
   } finally {
@@ -263,18 +302,50 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
   event.returnValue = "";
 }
 
-onMounted(() => window.addEventListener("beforeunload", handleBeforeUnload));
-onBeforeUnmount(() => window.removeEventListener("beforeunload", handleBeforeUnload));
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && mobileDrawerOpen.value) closeMobilePanels();
+}
+
+watch([isMobileLayout, mobileDrawerOpen], ([mobile, open]) => {
+  document.body.classList.toggle("knowledge-drawer-open", mobile && open);
+});
+
+onMounted(() => {
+  window.addEventListener("beforeunload", handleBeforeUnload);
+  document.addEventListener("keydown", handleGlobalKeydown);
+  if (typeof window.matchMedia === "function") {
+    mobileMediaQuery = window.matchMedia("(max-width: 720px)");
+    syncMobileLayout(mobileMediaQuery);
+    mobileMediaQuery.addEventListener("change", syncMobileLayout);
+    if (mobileMediaQuery.matches) editorMode.value = "write";
+  }
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("beforeunload", handleBeforeUnload);
+  document.removeEventListener("keydown", handleGlobalKeydown);
+  mobileMediaQuery?.removeEventListener("change", syncMobileLayout);
+  document.body.classList.remove("knowledge-drawer-open");
+});
 </script>
 
 <template>
   <div class="knowledge-shell">
-    <aside class="knowledge-library" aria-label="知识库与文档">
+    <aside
+      id="knowledge-library"
+      class="knowledge-library"
+      :class="{ 'knowledge-library--open': mobileLibraryOpen }"
+      aria-label="知识库与文档"
+      :aria-hidden="isMobileLayout ? !mobileLibraryOpen : undefined"
+      :aria-modal="isMobileLayout && mobileLibraryOpen ? 'true' : undefined"
+      :inert="isMobileLayout && !mobileLibraryOpen"
+      :role="isMobileLayout ? 'dialog' : undefined"
+    >
       <header class="library-header">
         <div><span>工作空间</span><strong>知识库</strong></div>
         <div class="library-header__actions">
           <button class="icon-button icon-button--small" type="button" title="新建知识库" aria-label="新建知识库" @click="showCollectionModal = true"><FolderPlus :size="17" /></button>
           <button class="icon-button icon-button--small" type="button" title="新建文档" aria-label="新建文档" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" /></button>
+          <button class="icon-button drawer-close" type="button" aria-label="关闭文档面板" @click="closeMobilePanels()"><X :size="20" /></button>
         </div>
       </header>
 
@@ -324,6 +395,27 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", handleBeforeUnl
 
     <section class="knowledge-canvas">
       <header class="knowledge-topbar">
+        <div class="knowledge-mobile-tools" aria-label="移动工作区面板">
+          <button
+            ref="mobileLibraryTrigger"
+            class="button button--secondary"
+            type="button"
+            aria-controls="knowledge-library"
+            :aria-expanded="mobileLibraryOpen"
+            data-testid="mobile-library-trigger"
+            @click="openMobileLibrary"
+          ><PanelLeft :size="18" />文档<span>{{ filteredNotes.length }}</span></button>
+          <button
+            ref="mobileInspectorTrigger"
+            class="button button--secondary"
+            type="button"
+            aria-controls="knowledge-inspector"
+            :aria-expanded="mobileInspectorOpen"
+            :disabled="!selectedNote"
+            data-testid="mobile-inspector-trigger"
+            @click="openMobileInspector"
+          ><PanelRight :size="18" />上下文</button>
+        </div>
         <div class="knowledge-heading">
           <p><span>知识库</span><span>/</span><span>{{ selectedCollection?.name || '未创建知识库' }}</span></p>
           <h2>{{ selectedNote?.title || '知识工作区' }}</h2>
@@ -331,7 +423,7 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", handleBeforeUnl
           <span v-else>组织 Markdown，并保持 Agent 检索来源可追溯。</span>
         </div>
         <div class="knowledge-actions">
-          <button class="button button--secondary" type="button" @click="showCollectionModal = true"><FolderPlus :size="17" />新建知识库</button>
+          <button class="button button--secondary knowledge-create-collection" type="button" @click="showCollectionModal = true"><FolderPlus :size="17" />新建知识库</button>
           <button class="button button--secondary" type="button" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" />新建文档</button>
           <button v-if="selectedNote" class="button button--primary" type="button" :disabled="!dirty || saving || !canEdit" @click="saveNote">
             <span v-if="saving" class="spinner" /><Save v-else :size="17" />保存并索引
@@ -378,8 +470,17 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", handleBeforeUnl
       </template>
     </section>
 
-    <aside class="knowledge-inspector" aria-label="文档上下文">
-      <header><span>上下文</span><strong>{{ selectedNote ? '可追溯来源' : '知识生命周期' }}</strong></header>
+    <aside
+      id="knowledge-inspector"
+      class="knowledge-inspector"
+      :class="{ 'knowledge-inspector--open': mobileInspectorOpen }"
+      aria-label="文档上下文"
+      :aria-hidden="isMobileLayout ? !mobileInspectorOpen : undefined"
+      :aria-modal="isMobileLayout && mobileInspectorOpen ? 'true' : undefined"
+      :inert="isMobileLayout && !mobileInspectorOpen"
+      :role="isMobileLayout ? 'dialog' : undefined"
+    >
+      <header><span>上下文</span><strong>{{ selectedNote ? '可追溯来源' : '知识生命周期' }}</strong><button class="icon-button drawer-close" type="button" aria-label="关闭上下文面板" @click="closeMobilePanels()"><X :size="20" /></button></header>
       <template v-if="selectedNote">
         <section class="inspector-section">
           <div class="inspector-section__heading"><strong>文档来源</strong><span>内部文档</span></div>
@@ -413,6 +514,8 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", handleBeforeUnl
         <span>03</span><strong>发布给 MCP</strong><p>通过最小权限 Token 控制 Agent 的读取范围。</p>
       </div>
     </aside>
+
+    <button v-if="mobileDrawerOpen" class="knowledge-mobile-scrim" type="button" aria-label="关闭移动面板" @click="closeMobilePanels()" />
   </div>
 
   <ModalDialog v-if="showCollectionModal" title="新建知识库" description="知识库是权限和 Agent 检索范围的边界。" @close="showCollectionModal = false">

@@ -86,18 +86,18 @@ onBeforeUnmount(() => window.clearInterval(pollHandle));
       </div>
       <div v-if="loading" class="page-loading"><span class="spinner" />载入任务</div>
       <div v-else-if="filtered.length === 0" class="empty-state"><div><div class="empty-state-icon"><DatabaseZap :size="22" /></div><h3>没有任务记录</h3><p>创建或更新 Markdown 后，索引任务会显示在这里。</p></div></div>
-      <div v-else class="data-table-wrap">
-        <table class="data-table">
+      <div v-else class="data-table-wrap data-table-wrap--cards">
+        <table class="data-table data-table--cards">
           <thead><tr><th>文档</th><th>类型</th><th>状态</th><th>尝试</th><th>更新时间</th><th>错误</th><th aria-label="操作" /></tr></thead>
           <tbody>
             <tr v-for="job in filtered" :key="job.id">
-              <td><span class="mono">{{ job.noteId.slice(0, 12) }}</span><div class="table-meta">v{{ job.version ?? '-' }}</div></td>
-              <td>{{ job.type === 'index' ? '索引' : '清理' }}</td>
-              <td><StatusBadge :status="job.status" /></td>
-              <td class="mono">{{ job.attempts }}/5</td>
-              <td>{{ formatDate(job.updatedAt) }}</td>
-              <td><span class="job-error" :title="job.lastError ?? ''">{{ job.lastError || '-' }}</span></td>
-              <td><div class="table-actions"><button class="icon-button icon-button--small" type="button" title="重试任务" aria-label="重试任务" :disabled="job.status !== 'failed'" @click="retry(job.id)"><RotateCcw :size="16" /></button></div></td>
+              <td data-label="文档"><span class="mono">{{ job.noteId.slice(0, 12) }}</span><div class="table-meta">v{{ job.version ?? '-' }}</div></td>
+              <td data-label="类型">{{ job.type === 'index' ? '索引' : '清理' }}</td>
+              <td data-label="状态"><StatusBadge :status="job.status" /></td>
+              <td class="mono" data-label="尝试">{{ job.attempts }}/5</td>
+              <td data-label="更新时间">{{ formatDate(job.updatedAt) }}</td>
+              <td data-label="错误"><span class="job-error" :title="job.lastError ?? ''">{{ job.lastError || '-' }}</span></td>
+              <td data-label="操作"><div class="table-actions"><button class="icon-button icon-button--small" type="button" title="重试任务" aria-label="重试任务" :disabled="job.status !== 'failed'" @click="retry(job.id)"><RotateCcw :size="16" /></button></div></td>
             </tr>
           </tbody>
         </table>
