@@ -1,0 +1,10 @@
+secrets
+host
+backups
+*.tar.gz
+*.sha256
+MANIFEST.sha256
+README.md
+scripts
+nginx/host-*.conf
+SOURCE-METADATA.txt

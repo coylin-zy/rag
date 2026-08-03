@@ -134,9 +134,12 @@ curl.exe https://rag-api.coylin.com/healthz
 
 ```powershell
 pnpm build:web
+pnpm verify:production:web
 tar -czf rag-web.tar.gz -C dist .
 scp rag-web.tar.gz user@your-hk-server:/tmp/rag-web.tar.gz
 ```
+
+`pnpm build:web` 会在 Vite 构建后检查 `index.html`、Vue 挂载点以及全部入口 JS/CSS 是否真实存在且非空。部署完成后必须执行 `pnpm verify:production:web`；它会从公网入口重新提取全部引用资源，检查状态码和 Content-Type，并同时验证未登录会话与 Worker 健康状态。
 
 在服务器上把压缩包解压到 `/var/www/rag.coylin.com/releases/<release>`，再将 `/var/www/rag.coylin.com/current` 原子切换到该目录。首发先使用 `rag.coylin.com.bootstrap.conf`，保持 DNS only 并签发证书：
 

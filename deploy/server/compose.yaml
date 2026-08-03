@@ -1,0 +1,19 @@
+services:
+  web:
+    container_name: rag-frontend
+    image: ${RAG_FRONTEND_IMAGE:-rag-frontend-local:current}
+    build:
+      context: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3020:8080"
+    volumes:
+      - ./secrets/rag-proxy-auth.conf:/etc/nginx/snippets/rag-proxy-auth.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "assets=$$(grep -oE '/assets/[A-Za-z0-9_.-]+\\.(js|css)' /usr/share/nginx/html/index.html | sort -u); test -n \"$$assets\"; for asset in $$assets; do test -r /usr/share/nginx/html$$asset && wget -qO- http://127.0.0.1:8080$$asset >/dev/null || exit 1; done"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
