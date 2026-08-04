@@ -195,3 +195,36 @@ Nginx 将静态资源读取失败表现为 404。浏览器能得到 HTML 外壳�
 - `pnpm test`：38/38 通过；既有 Vectorize 本地限制和 SDK sourcemap 警告仍存在，但没有失败测试。
 - `pnpm verify:production:web`：通过，公网 11 个资源全部正常，未登录 session 为 401，Worker health 为 200。
 - 用户明确改为只测试后，本轮只做浏览器操作、测试和 `tech.md` 记录；没有修改源代码、没有部署。此前仅做过一次只读 SSH 连通性探测，远端在 SSH 握手阶段关闭连接，未执行任何服务器变更命令。
+
+## 2026-08-04 缺陷修复与本地回归
+
+### 修改边界
+
+- 修改前已创建 Git 快照 `1842b45 chore: save production QA baseline`。
+- 本节记录的是本地代码与本地 Worker 验证；没有部署 Cloudflare Worker，也没有更新香港服务器前端。
+- `output/` 为 Playwright、截图和临时调试产物，已整体加入 `.gitignore`，不进入产品提交。
+
+### 已完成修复
+
+1. 业务路由只在会话和知识库初始化完成后挂载，避免 `/proposals`、`/jobs` 等页面在初始化前后重复挂载并重复请求。
+2. 初始化失败改为常驻错误页，提供“重新连接”；401 会回到登录页并保留原始跳转地址。
+3. 设置齿轮打开只读“工作区信息”弹窗，展示管理员、连接状态、知识库数量和 MCP Endpoint。
+4. 增加知识库删除入口与完整名称二次确认；只有管理员可以删除。
+5. 新增 `DELETE /api/v1/collections/:collectionId`：有当前文档、有效 Token 或待审核提案时返回 409；可删除时清理 R2、Vectorize、FTS、D1 关系数据并写入 `collection.delete` 审计记录。
+6. 新增迁移 `0004_collection_delete.sql`，允许删除知识库时级联移除最后一名管理员，同时继续阻止日常成员操作移除最后一名管理员。
+7. 移动端 E2E 改为按 `aria-expanded` 判断文档抽屉状态，并在断言预览内容前显式切换“预览”；测试不再假设持久化数据库为空。
+
+### 验证结果
+
+- `pnpm test:e2e`：桌面 Chromium 与 `375x812` 移动端均通过，2/2；覆盖登录、创建知识库和 Markdown、编辑保存、版本、检索、Token、MCP 提案、人工审核与审核后检索闭环。
+- `pnpm typecheck`：通过。
+- `pnpm test:web`：12/12 通过；其中设置弹窗、初始化错误/重试、单次 `/proposals` 请求、移动抽屉与删除名称确认均有断言。
+- `pnpm test`：39/39 通过；知识库删除覆盖不存在资源 404、无权限、非空、有效 Token 阻塞、R2 清理、D1 级联与审计记录。
+- `pnpm build:web`：通过；`verify:web-build` 验证 `index.html` 与 11 个引用资源。
+- 本地 Worker 仍会提示 Vectorize/AI binding 不支持纯本地模式以及依赖 sourcemap 缺失；本轮没有由这些提示引起的失败测试。
+
+### Browser 与线上对照边界
+
+- 应用内 Browser 对 `http://127.0.0.1:5173` 仍命中当前任务保存的 origin 拒绝规则。遵守安全约束，没有改用 `localhost`、其他浏览器或原始 CDP 绕过。
+- 因此本轮可见交互证据来自仓库 Playwright 的真实 Chromium 桌面/移动端回归，设置、删除与请求去重另由组件/API 测试交叉验证；没有新增应用内 Browser 截图和 Console 记录。
+- 线上 `rag.coylin.com` 仍是未部署的旧版本，本节修复不能视为生产已生效；部署前仍需远端迁移、Worker/前端发布和公网复验。

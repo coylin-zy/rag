@@ -22,6 +22,27 @@ async function expectCenterHitTarget(locator: Locator) {
   })).toBe(true);
 }
 
+async function openMobileKnowledgeLibrary(page: Page) {
+  const libraryTrigger = page.getByTestId("mobile-library-trigger");
+  if (await libraryTrigger.isVisible() && await libraryTrigger.getAttribute("aria-expanded") !== "true") {
+    await libraryTrigger.click();
+  }
+}
+
+async function clickKnowledgeAction(page: Page, primaryTestId: string, sidebarTestId: string) {
+  const primary = page.getByTestId(primaryTestId);
+  if (await primary.isVisible()) {
+    await primary.click();
+    return;
+  }
+  const libraryTrigger = page.getByTestId("mobile-library-trigger");
+  await expect(libraryTrigger).toBeVisible();
+  await openMobileKnowledgeLibrary(page);
+  const sidebar = page.getByTestId(sidebarTestId);
+  await expect(sidebar).toBeVisible();
+  await sidebar.click();
+}
+
 async function mcpCall(request: APIRequestContext, token: string, name: string, args: Record<string, unknown>) {
   const response = await request.post("/mcp", {
     headers: {
@@ -62,19 +83,19 @@ test("knowledge, retrieval, token and reviewed-memory workflow", async ({ page, 
 
   await page.goto("/login");
   await expect(page).toHaveURL(/\/login$/);
-  await expect(page.getByRole("heading", { name: "登录 Knowledge Core" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "欢迎回来" })).toBeVisible();
   await page.getByLabel("管理员邮箱").fill("admin@coylin.com");
   await page.getByLabel("密码").fill("wrong-password");
-  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByRole("button", { name: "进入知识工作区", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("邮箱或密码错误");
   await page.getByLabel("密码").fill("password");
-  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByRole("button", { name: "进入知识工作区", exact: true }).click();
   await expect(page).toHaveURL(/\/knowledge$/);
   runtimeErrors.length = 0;
-  await expect(page.getByRole("heading", { name: "知识工作区" })).toBeVisible();
+  await expect(page.locator(".knowledge-shell")).toBeVisible();
   await expectNoPageOverflow(page);
 
-  await page.getByRole("button", { name: "新建知识库", exact: true }).click();
+  await clickKnowledgeAction(page, "create-collection-primary", "create-collection-sidebar");
   let dialog = page.getByRole("dialog", { name: "新建知识库" });
   await expect(dialog.getByLabel("名称")).toBeFocused();
   await expectNoPageOverflow(page);
@@ -84,7 +105,7 @@ test("knowledge, retrieval, token and reviewed-memory workflow", async ({ page, 
   await expect(page).toHaveURL(/\/knowledge\/[0-9a-f-]+$/);
   const collectionId = page.url().split("/").pop() ?? "";
 
-  await page.getByRole("button", { name: "新建文档" }).click();
+  await clickKnowledgeAction(page, "create-note-primary", "create-note-sidebar");
   dialog = page.getByRole("dialog", { name: "新建 Markdown" });
   await expect(dialog.getByLabel("标题")).toBeFocused();
   await dialog.getByLabel("标题").fill(noteTitle);
@@ -97,6 +118,10 @@ test("knowledge, retrieval, token and reviewed-memory workflow", async ({ page, 
   await editor.fill(`${initialMarkdown.trim()}\n\n生产部署精确编号：${marker}\n\n## Queue\n\n使用 Queue 异步建立索引。\n`);
   await page.getByRole("button", { name: "保存" }).click();
   await expect(page.getByText("已保存，索引任务已排队")).toBeVisible();
+  const mobilePreviewTrigger = page.getByTestId("mobile-preview-trigger");
+  if (await mobilePreviewTrigger.isVisible()) {
+    await mobilePreviewTrigger.click();
+  }
   await expect(page.locator(".markdown-preview")).toContainText(marker);
   await expect(page.locator(".markdown-preview")).not.toContainText("status: published");
 
@@ -181,7 +206,10 @@ test("knowledge, retrieval, token and reviewed-memory workflow", async ({ page, 
   }, { timeout: 25_000, intervals: [500, 1_000, 2_000] }).toMatch(/^kb:\/\/collections\//);
 
   await navigate(page, "知识库");
+  await openMobileKnowledgeLibrary(page);
   await page.getByRole("button", { name: new RegExp(collectionName) }).click();
+  await expect(page).toHaveURL(new RegExp(`/knowledge/${collectionId}$`));
+  await openMobileKnowledgeLibrary(page);
   await expect(page.getByRole("button", { name: new RegExp(proposalTitle) })).toBeVisible();
   expect(runtimeErrors).toEqual([]);
 });

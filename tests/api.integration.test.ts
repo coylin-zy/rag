@@ -139,6 +139,77 @@ describe("management API, D1 and R2", () => {
     expect("data" in jobsForViewer.body && jobsForViewer.body.data).toEqual([]);
   });
 
+  it("deletes only unused collections with administrator permission and records the purge", async () => {
+    vi.spyOn(env.INDEX_QUEUE, "send").mockResolvedValue(queueSendResponse());
+    const missingDelete = await apiRequest(
+      "/api/v1/collections/00000000-0000-4000-8000-000000000000",
+      { method: "DELETE" },
+    );
+    expect(missingDelete.response.status).toBe(404);
+    expect("error" in missingDelete.body && missingDelete.body.error.code).toBe("collection_not_found");
+
+    const collection = await createCollection("Disposable knowledge");
+    await apiRequest(
+      `/api/v1/collections/${collection.id}/members`,
+      jsonInit("PUT", { email: "viewer-delete@example.com", role: "viewer" }),
+    );
+
+    const viewerDelete = await apiRequest(
+      `/api/v1/collections/${collection.id}`,
+      { method: "DELETE" },
+      "viewer-delete@example.com",
+    );
+    expect(viewerDelete.response.status).toBe(403);
+
+    const outsiderDelete = await apiRequest(
+      `/api/v1/collections/${collection.id}`,
+      { method: "DELETE" },
+      "outsider-delete@example.com",
+    );
+    expect(outsiderDelete.response.status).toBe(404);
+
+    const created = await createNote(collection.id, { title: "Temporary note", body: "Delete me safely" });
+    const nonEmptyDelete = await apiRequest(`/api/v1/collections/${collection.id}`, { method: "DELETE" });
+    expect(nonEmptyDelete.response.status).toBe(409);
+    expect("error" in nonEmptyDelete.body && nonEmptyDelete.body.error.code).toBe("collection_not_empty");
+
+    const token = await apiRequest<{ id: string }>(
+      "/api/v1/tokens",
+      jsonInit("POST", {
+        name: "Temporary collection token",
+        collectionIds: [collection.id],
+        scopes: ["knowledge:read"],
+        expiresAt: null,
+      }),
+    );
+    expect(token.response.status).toBe(201);
+    if (!("data" in token.body)) throw new Error("Token creation failed");
+
+    const noteDelete = await apiRequest(`/api/v1/notes/${created.note.id}`, { method: "DELETE" });
+    expect(noteDelete.response.status).toBe(200);
+    const tokenBlockedDelete = await apiRequest(`/api/v1/collections/${collection.id}`, { method: "DELETE" });
+    expect(tokenBlockedDelete.response.status).toBe(409);
+    expect("error" in tokenBlockedDelete.body && tokenBlockedDelete.body.error.code).toBe("collection_has_active_tokens");
+
+    const revoke = await apiRequest(`/api/v1/tokens/${token.body.data.id}`, { method: "DELETE" });
+    expect(revoke.response.status).toBe(200);
+    const deleted = await apiRequest<{ deleted: boolean; collectionId: string }>(
+      `/api/v1/collections/${collection.id}`,
+      { method: "DELETE" },
+    );
+    expect(deleted.response.status).toBe(200);
+    expect("data" in deleted.body && deleted.body.data).toEqual({ deleted: true, collectionId: collection.id });
+
+    expect(await env.DB.prepare("SELECT id FROM collections WHERE id = ?").bind(collection.id).first()).toBeNull();
+    expect(await env.NOTES.get(`notes/${collection.id}/${created.note.id}/current.md`)).toBeNull();
+    expect(await env.NOTES.get(`versions/${collection.id}/${created.note.id}/1.md`)).toBeNull();
+    const audit = await env.DB.prepare(
+      "SELECT action, metadata_json AS metadataJson FROM audit_logs WHERE resource_id = ? AND action = 'collection.delete'",
+    ).bind(collection.id).first<{ action: string; metadataJson: string }>();
+    expect(audit?.action).toBe("collection.delete");
+    expect(JSON.parse(audit?.metadataJson ?? "{}")).toMatchObject({ deletedNoteHistory: 1, deletedObjects: 2 });
+  });
+
   it("returns only knowledge-base-scoped audit events to administrators", async () => {
     const collection = await createCollection();
     await apiRequest(

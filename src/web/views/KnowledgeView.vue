@@ -68,6 +68,9 @@ const versions = ref<VersionRow[]>([]);
 const showMembersModal = ref(false);
 const members = ref<MemberRow[]>([]);
 const memberForm = ref<{ email: string; role: Role }>({ email: "", role: "viewer" });
+const showDeleteCollectionModal = ref(false);
+const deleteCollectionConfirmation = ref("");
+const deletingCollection = ref(false);
 
 const selectedCollection = computed(() => appStore.collections.find((item) => item.id === selectedCollectionId.value) ?? null);
 const canEdit = computed(() => selectedCollection.value?.role === "admin" || selectedCollection.value?.role === "editor");
@@ -277,6 +280,40 @@ async function removeMember(email: string) {
   }
 }
 
+function openDeleteCollection() {
+  deleteCollectionConfirmation.value = "";
+  showDeleteCollectionModal.value = true;
+}
+
+function closeDeleteCollection() {
+  if (deletingCollection.value) return;
+  showDeleteCollectionModal.value = false;
+  deleteCollectionConfirmation.value = "";
+}
+
+async function deleteSelectedCollection() {
+  const collection = selectedCollection.value;
+  if (!collection || deleteCollectionConfirmation.value !== collection.name || deletingCollection.value) return;
+  deletingCollection.value = true;
+  try {
+    await api<{ deleted: boolean }>(`/api/v1/collections/${collection.id}`, { method: "DELETE" });
+    showDeleteCollectionModal.value = false;
+    deleteCollectionConfirmation.value = "";
+    selectedCollectionId.value = "";
+    selectedNote.value = null;
+    editorValue.value = "";
+    notes.value = [];
+    await appStore.loadCollections();
+    const nextCollectionId = appStore.collections[0]?.id;
+    await router.replace(nextCollectionId ? `/knowledge/${nextCollectionId}` : "/knowledge");
+    toast.show("知识库已永久删除", "success");
+  } catch (error) {
+    toast.show(error instanceof Error ? error.message : "知识库删除失败", "error");
+  } finally {
+    deletingCollection.value = false;
+  }
+}
+
 watch(
   () => [route.params.collectionId, route.params.noteId, appStore.collections.length] as const,
   async ([routeCollection, routeNote]) => {
@@ -343,8 +380,8 @@ onBeforeUnmount(() => {
       <header class="library-header">
         <div><span>工作空间</span><strong>知识库</strong></div>
         <div class="library-header__actions">
-          <button class="icon-button icon-button--small" type="button" title="新建知识库" aria-label="新建知识库" @click="showCollectionModal = true"><FolderPlus :size="17" /></button>
-          <button class="icon-button icon-button--small" type="button" title="新建文档" aria-label="新建文档" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" /></button>
+          <button class="icon-button icon-button--small" type="button" title="新建知识库" aria-label="新建知识库" data-testid="create-collection-sidebar" @click="showCollectionModal = true"><FolderPlus :size="17" /></button>
+          <button class="icon-button icon-button--small" type="button" title="新建文档" aria-label="新建文档" data-testid="create-note-sidebar" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" /></button>
           <button class="icon-button drawer-close" type="button" aria-label="关闭文档面板" @click="closeMobilePanels()"><X :size="20" /></button>
         </div>
       </header>
@@ -390,7 +427,10 @@ onBeforeUnmount(() => {
         </button>
       </section>
 
-      <button v-if="selectedCollection && canAdmin" class="library-members" type="button" @click="openMembers"><Users :size="16" />管理知识库成员</button>
+      <div v-if="selectedCollection && canAdmin" class="library-admin-actions">
+        <button class="library-members" type="button" @click="openMembers"><Users :size="16" />管理知识库成员</button>
+        <button class="library-delete" type="button" title="删除知识库" aria-label="删除知识库" data-testid="delete-collection-trigger" @click="openDeleteCollection"><Trash2 :size="17" /></button>
+      </div>
     </aside>
 
     <section class="knowledge-canvas">
@@ -402,8 +442,8 @@ onBeforeUnmount(() => {
           <span v-else>组织 Markdown，并保持 Agent 检索来源可追溯。</span>
         </div>
         <div class="knowledge-actions">
-          <button class="button button--secondary knowledge-create-collection" type="button" @click="showCollectionModal = true"><FolderPlus :size="17" />新建知识库</button>
-          <button class="button button--secondary knowledge-create-note" type="button" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" />新建文档</button>
+          <button class="button button--secondary knowledge-create-collection" type="button" data-testid="create-collection-primary" @click="showCollectionModal = true"><FolderPlus :size="17" />新建知识库</button>
+          <button class="button button--secondary knowledge-create-note" type="button" data-testid="create-note-primary" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" />新建文档</button>
           <button v-if="selectedNote" class="button button--primary knowledge-save" type="button" :disabled="!dirty || saving || !canEdit" @click="saveNote">
             <span v-if="saving" class="spinner" /><Save v-else :size="17" /><span class="save-label-desktop">保存并索引</span><span class="save-label-mobile">保存</span>
           </button>
@@ -553,6 +593,23 @@ onBeforeUnmount(() => {
       <div class="field"><label for="note-tags">标签</label><input id="note-tags" v-model="noteForm.tags" class="input" placeholder="架构, MCP, Cloudflare" /><p class="field-hint">使用英文逗号分隔标签。</p></div>
     </form>
     <template #footer><button class="button button--secondary" type="button" @click="showNoteModal = false">取消</button><button class="button button--primary" type="submit" form="note-form" :disabled="creatingNote"><span v-if="creatingNote" class="spinner" />创建并编辑</button></template>
+  </ModalDialog>
+
+  <ModalDialog v-if="showDeleteCollectionModal && selectedCollection" title="删除知识库" :description="selectedCollection.name" @close="closeDeleteCollection">
+    <div class="delete-confirmation">
+      <p class="delete-confirmation__warning">此操作不可撤销。只有不含当前文档、未被有效 Token 使用且没有待审核提案的知识库才能删除；已删除文档的历史版本也会被永久清理。</p>
+      <div class="field">
+        <label for="delete-collection-confirmation">输入知识库名称以确认</label>
+        <div class="delete-confirmation__name">{{ selectedCollection.name }}</div>
+        <input id="delete-collection-confirmation" v-model="deleteCollectionConfirmation" class="input" autocomplete="off" data-testid="delete-collection-confirmation" autofocus />
+      </div>
+    </div>
+    <template #footer>
+      <button class="button button--secondary" type="button" :disabled="deletingCollection" @click="closeDeleteCollection">取消</button>
+      <button class="button button--danger" type="button" data-testid="confirm-delete-collection" :disabled="deletingCollection || deleteCollectionConfirmation !== selectedCollection.name" @click="deleteSelectedCollection">
+        <span v-if="deletingCollection" class="spinner" />永久删除
+      </button>
+    </template>
   </ModalDialog>
 
   <ModalDialog v-if="showVersionsModal" title="版本记录" :description="selectedNote?.title" @close="showVersionsModal = false">

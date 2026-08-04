@@ -65,6 +65,11 @@ a { color: inherit; }
 .menu-button { display: none; }
 .main-content { min-width: 0; max-width: 100%; min-height: calc(100dvh - 70px); padding: 24px 28px 40px; }
 .page-loading { min-height: 300px; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--text-muted); }
+.initialization-state { min-height: 100dvh; flex-direction: column; padding: 32px; text-align: center; }
+.initialization-state > svg { color: var(--danger); }
+.initialization-state h2 { margin: 2px 0 0; color: var(--text); font-size: 20px; }
+.initialization-state p { max-width: 52ch; margin: 0 0 8px; line-height: 1.6; }
+.initialization-state small { color: #8a919e; font: 11px "SFMono-Regular", Consolas, monospace; }
 
 .login-page { min-height: 100dvh; display: grid; place-items: center; padding: 28px 18px; background: radial-gradient(circle at 50% 0%, #eef3ff 0, var(--bg) 42%); }
 .login-panel { width: min(430px, 100%); padding: 38px 40px 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 20px 60px rgb(20 24 32 / 10%); }
@@ -149,6 +154,14 @@ a { color: inherit; }
 .modal-header p { margin: 3px 0 0; color: var(--text-muted); font-size: 12px; }
 .modal-body { min-height: 0; overflow-y: auto; padding: 20px; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; background: var(--surface-subtle); border-top: 1px solid var(--border); }
+.settings-summary { display: grid; gap: 0; margin: 0; }
+.settings-summary > div { min-width: 0; display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.settings-summary > div:last-child { border-bottom: 0; }
+.settings-summary dt { color: var(--text-muted); font-size: 12px; }
+.settings-summary dd { min-width: 0; margin: 0; color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.settings-status { width: 8px; height: 8px; display: inline-block; margin-right: 7px; background: #a7adb8; border-radius: 50%; }
+.settings-status--online { background: var(--success); box-shadow: 0 0 0 3px rgb(14 131 94 / 12%); }
+.settings-endpoint { font-weight: 500 !important; }
 
 .toast-host { position: fixed; z-index: 1200; right: 20px; bottom: 20px; display: grid; gap: 8px; width: min(380px, calc(100vw - 32px)); }
 .toast { min-height: 46px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; background: var(--surface); border: 1px solid var(--border); border-left-width: 4px; border-radius: 6px; box-shadow: 0 8px 26px rgb(20 24 32 / 16%); }
@@ -391,6 +404,8 @@ button, input, textarea, select { font-family: inherit; }
 .product-rail__footer { margin-top: auto; display: grid; justify-items: center; gap: 5px; padding: 10px 8px 14px; border-top: 1px solid var(--border); }
 .worker-indicator { display: flex; align-items: center; gap: 5px; margin-bottom: 2px; color: var(--text-muted); font-size: 9px; }
 .worker-indicator > span { width: 6px; height: 6px; background: #47a875; border-radius: 50%; box-shadow: 0 0 0 3px rgb(71 168 117 / 10%); }
+.worker-indicator--offline { color: var(--danger); }
+.worker-indicator--offline > span { background: var(--danger); box-shadow: 0 0 0 3px rgb(199 53 49 / 10%); }
 .rail-utility { width: 36px; height: 36px; display: grid; place-items: center; color: #6a7383; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
 .rail-utility:hover { color: #233154; background: #f2f4f8; }
 .rail-account { display: grid; justify-items: center; gap: 6px; }
@@ -482,8 +497,14 @@ button, input, textarea, select { font-family: inherit; }
 .knowledge-library .note-item { min-height: 78px; margin-bottom: 2px; padding: 10px; }
 .knowledge-library .note-item--active { background: #edf2ff; box-shadow: inset 3px 0 var(--primary); }
 .knowledge-library .status-badge { min-height: 20px; padding: 1px 6px; font-size: 9px; }
-.library-members { min-height: 43px; display: flex; align-items: center; gap: 7px; margin: 10px; padding: 0 10px; color: #536079; background: transparent; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; }
+.library-admin-actions { display: grid; grid-template-columns: minmax(0, 1fr) 43px; gap: 6px; margin: 10px; }
+.library-members { min-height: 43px; display: flex; align-items: center; gap: 7px; margin: 0; padding: 0 10px; color: #536079; background: transparent; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; }
 .library-members:hover { color: #2f4cc0; background: #f4f6fc; }
+.library-delete { width: 43px; min-height: 43px; display: grid; place-items: center; color: var(--danger); background: transparent; border: 1px solid #edcfcd; border-radius: 7px; }
+.library-delete:hover { background: #fff4f3; }
+.delete-confirmation { display: grid; gap: 16px; }
+.delete-confirmation__warning { margin: 0; padding: 12px 14px; color: #8d302d; background: #fff5f4; border: 1px solid #f0cecc; border-radius: 7px; font-size: 12px; line-height: 1.65; }
+.delete-confirmation__name { font-weight: 750; overflow-wrap: anywhere; }
 .knowledge-canvas { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #fff; }
 .knowledge-topbar { min-height: 116px; display: flex; align-items: center; justify-content: space-between; gap: 22px; padding: 20px 24px; border-bottom: 1px solid var(--border); }
 .knowledge-heading { min-width: 0; }
@@ -604,7 +625,8 @@ button, input, textarea, select { font-family: inherit; }
   .library-section--documents { min-height: 180px; overflow-y: auto; }
   .knowledge-library .collection-item, .knowledge-library .note-item { min-height: 60px; }
   .knowledge-library .note-item { min-height: 82px; }
-  .library-members { min-height: 44px; flex: 0 0 auto; }
+  .library-admin-actions { flex: 0 0 auto; }
+  .library-members, .library-delete { min-height: 44px; }
   .knowledge-canvas { height: 100%; min-height: 0; overflow: hidden; }
   .knowledge-topbar { min-height: calc(68px + env(safe-area-inset-top)); flex: 0 0 auto; align-items: center; flex-direction: row; gap: 10px; padding: max(12px, env(safe-area-inset-top)) 12px 12px max(68px, calc(env(safe-area-inset-left) + 60px)); }
   .knowledge-heading { width: auto; min-width: 0; flex: 1; }

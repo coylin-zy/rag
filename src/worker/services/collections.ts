@@ -21,6 +21,42 @@ function translateLastAdminError(error: unknown): never {
   throw error;
 }
 
+async function deleteR2Prefix(env: Env, prefix: string): Promise<number> {
+  let deleted = 0;
+  while (true) {
+    const page = await env.NOTES.list({ prefix, limit: 1000 });
+    const keys = page.objects.map((object) => object.key);
+    if (keys.length === 0) return deleted;
+    await env.NOTES.delete(keys);
+    deleted += keys.length;
+    if (!page.truncated) return deleted;
+  }
+}
+
+async function purgeCollectionSearchData(env: Env, collectionId: string): Promise<number> {
+  let deleted = 0;
+  while (true) {
+    const result = await env.DB.prepare(
+      "SELECT id FROM chunks WHERE collection_id = ? ORDER BY id LIMIT 100",
+    ).bind(collectionId).all<{ id: string }>();
+    const ids = result.results?.map((row) => row.id) ?? [];
+    if (ids.length === 0) return deleted;
+
+    try {
+      await env.VECTOR_INDEX.deleteByIds(ids);
+    } catch (error) {
+      if (env.ENVIRONMENT !== "development") throw error;
+    }
+
+    const placeholders = ids.map(() => "?").join(",");
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM chunks_fts WHERE chunk_id IN (${placeholders})`).bind(...ids),
+      env.DB.prepare(`DELETE FROM chunks WHERE id IN (${placeholders})`).bind(...ids),
+    ]);
+    deleted += ids.length;
+  }
+}
+
 export async function listCollections(env: Env, principal: AdminPrincipal): Promise<CollectionSummary[]> {
   const db = createDb(env.DB);
   const membershipRows = principal.bootstrapAdmin
@@ -64,6 +100,75 @@ export async function createCollection(
   ]);
   await writeAudit(env, { actorType: "user", actorId: principal.email, action: "collection.create", resourceType: "collection", resourceId: id, collectionIds: [id] });
   return { id, name: input.name, description: input.description, role: "admin", noteCount: 0, updatedAt: now };
+}
+
+export async function deleteCollection(env: Env, principal: AdminPrincipal, collectionId: string) {
+  await requireCollectionRole(env, principal, collectionId, "admin");
+  const collection = await env.DB.prepare(
+    "SELECT id FROM collections WHERE id = ? LIMIT 1",
+  ).bind(collectionId).first<{ id: string }>();
+  if (!collection) throw new ApiError(404, "collection_not_found", "知识库不存在或无权访问");
+
+  const now = nowIso();
+  const usage = await env.DB.prepare(`
+    SELECT
+      (SELECT count(*) FROM notes WHERE collection_id = ? AND status != 'deleted') AS activeNoteCount,
+      (SELECT count(*) FROM notes WHERE collection_id = ? AND status = 'deleted') AS deletedNoteCount,
+      (SELECT count(*) FROM memory_proposals WHERE collection_id = ? AND status = 'pending') AS pendingProposalCount,
+      (
+        SELECT count(DISTINCT token.id)
+        FROM api_tokens token, json_each(token.collection_ids_json) scope
+        WHERE scope.value = ?
+          AND token.revoked_at IS NULL
+          AND (token.expires_at IS NULL OR token.expires_at > ?)
+      ) AS activeTokenCount
+  `).bind(collectionId, collectionId, collectionId, collectionId, now).first<{
+    activeNoteCount: number;
+    deletedNoteCount: number;
+    pendingProposalCount: number;
+    activeTokenCount: number;
+  }>();
+
+  if (!usage) throw new ApiError(500, "collection_usage_unavailable", "暂时无法检查知识库使用状态");
+  if (Number(usage.activeNoteCount) > 0) {
+    throw new ApiError(409, "collection_not_empty", "请先删除知识库中的全部文档");
+  }
+  if (Number(usage.activeTokenCount) > 0) {
+    throw new ApiError(409, "collection_has_active_tokens", "请先撤销仍在使用此知识库的 MCP Token");
+  }
+  if (Number(usage.pendingProposalCount) > 0) {
+    throw new ApiError(409, "collection_has_pending_proposals", "请先处理此知识库的待审核记忆提案");
+  }
+
+  const deletedSearchChunks = await purgeCollectionSearchData(env, collectionId);
+  let deletedObjects = 0;
+  for (const prefix of [`notes/${collectionId}/`, `versions/${collectionId}/`, `proposals/${collectionId}/`]) {
+    deletedObjects += await deleteR2Prefix(env, prefix);
+  }
+
+  const auditId = crypto.randomUUID();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM collections WHERE id = ?").bind(collectionId),
+    env.DB.prepare(`
+      INSERT INTO audit_logs (
+        id, actor_type, actor_id, action, resource_type, resource_id,
+        collection_ids_json, metadata_json, created_at
+      ) VALUES (?, 'user', ?, 'collection.delete', 'collection', ?, ?, ?, ?)
+    `).bind(
+      auditId,
+      principal.email,
+      collectionId,
+      JSON.stringify([collectionId]),
+      JSON.stringify({
+        deletedNoteHistory: Number(usage.deletedNoteCount),
+        deletedObjects,
+        deletedSearchChunks,
+      }),
+      now,
+    ),
+  ]);
+
+  return { deleted: true, collectionId };
 }
 
 export async function listMembers(env: Env, principal: AdminPrincipal, collectionId: string) {

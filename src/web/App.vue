@@ -15,7 +15,7 @@ const router = useRouter();
 const authLayout = computed(() => route.meta.layout === "auth");
 
 async function ensureSession() {
-  if (route.name === "login" || authLayout.value || appStore.initialized || appStore.loading) return;
+  if (route.name === "login" || authLayout.value || appStore.initialized || appStore.loading || appStore.initializationError) return;
   try {
     await appStore.initialize();
   } catch (error) {

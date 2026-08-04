@@ -6,6 +6,7 @@ dist/
 playwright-report/
 test-results/
 coverage/
+output/
 output/playwright/
 .playwright-cli/
 output/*.tar.gz

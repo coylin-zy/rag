@@ -26,7 +26,7 @@ import { writeAudit } from "./lib/audit";
 import { ApiError, errorResponse } from "./lib/errors";
 import { handleMcpRequest } from "./mcp";
 import { listAuditLogs } from "./services/audit";
-import { createCollection, listCollections, listMembers, removeMember, upsertMember } from "./services/collections";
+import { createCollection, deleteCollection, listCollections, listMembers, removeMember, upsertMember } from "./services/collections";
 import { enqueueJob, listJobsForAdmin, retryJobForAdmin } from "./services/jobs";
 import {
   createNote,
@@ -144,6 +144,9 @@ app.post("/api/v1/collections", async (c) => {
   const input = createCollectionSchema.parse(await c.req.json());
   return ok(c, await createCollection(c.env, c.get("principal"), input), 201);
 });
+app.delete("/api/v1/collections/:collectionId", async (c) => (
+  ok(c, await deleteCollection(c.env, c.get("principal"), c.req.param("collectionId")))
+));
 app.get("/api/v1/collections/:collectionId/members", async (c) => ok(c, await listMembers(c.env, c.get("principal"), c.req.param("collectionId"))));
 app.put("/api/v1/collections/:collectionId/members", async (c) => {
   const input = z.object({ email: z.string().email(), role: roleSchema }).parse(await c.req.json());
