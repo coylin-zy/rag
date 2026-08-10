@@ -14,6 +14,7 @@ const utf8Markdown = z.string().min(1).max(MAX_MARKDOWN_BYTES).refine(
 export const roleSchema = z.enum(["admin", "editor", "viewer"]);
 export const noteStatusSchema = z.enum(["draft", "published", "deleted"]);
 export const jobStatusSchema = z.enum(["queued", "processing", "ready", "failed"]);
+export const tokenScopeSchema = z.enum(["knowledge:read", "memory:propose", "knowledge:admin"]);
 
 export const createCollectionSchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -33,9 +34,25 @@ export const searchSchema = z.object({
 
 export const createTokenSchema = z.object({
   name: z.string().trim().min(1).max(80),
-  collectionIds: z.array(z.string().uuid()).min(1).max(50),
-  scopes: z.array(z.enum(["knowledge:read", "memory:propose"])).min(1),
+  collectionIds: z.array(z.string().uuid()).max(50),
+  scopes: z.array(tokenScopeSchema).min(1),
   expiresAt: z.string().datetime().nullable().default(null),
+}).superRefine((input, context) => {
+  const isKnowledgeAdmin = input.scopes.includes("knowledge:admin");
+  if (isKnowledgeAdmin && input.scopes.length !== 1) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["scopes"],
+      message: "knowledge:admin 不能与其他权限组合",
+    });
+  }
+  if (!isKnowledgeAdmin && input.collectionIds.length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["collectionIds"],
+      message: "普通 Token 至少需要一个知识库",
+    });
+  }
 });
 
 export const proposalSchema = z.object({
@@ -49,6 +66,7 @@ export const proposalSchema = z.object({
 export type Role = z.infer<typeof roleSchema>;
 export type NoteStatus = z.infer<typeof noteStatusSchema>;
 export type JobStatus = z.infer<typeof jobStatusSchema>;
+export type TokenScope = z.infer<typeof tokenScopeSchema>;
 export type SearchInput = z.infer<typeof searchSchema>;
 
 export interface ApiEnvelope<T> {

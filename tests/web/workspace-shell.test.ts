@@ -371,6 +371,81 @@ describe("redesigned workspace shell", () => {
     wrapper.unmount();
   });
 
+  it("creates an exclusive global Agent Token payload with a short default lifetime", async () => {
+    const store = useAppStore();
+    store.initialized = true;
+    store.session = { principal: { email: "admin@coylin.com", subject: "admin", bootstrapAdmin: true } };
+    store.collections = [];
+    let submitted: Record<string, unknown> | null = null;
+    vi.mocked(api).mockImplementation(async (path: string, init: RequestInit = {}) => {
+      if (path === "/api/v1/tokens" && init.method === "POST") {
+        submitted = JSON.parse(String(init.body));
+        return {
+          id: "token-admin",
+          name: "Trusted Codex",
+          prefix: "kcore_admin",
+          token: "kcore_once",
+          collectionIds: [],
+          scopes: ["knowledge:admin"],
+          createdAt: "2026-08-10T08:00:00.000Z",
+          createdBy: "admin@coylin.com",
+          expiresAt: submitted?.expiresAt ?? null,
+          lastUsedAt: null,
+          revokedAt: null,
+        };
+      }
+      return [];
+    });
+
+    const wrapper = mount(TokensView, { global: { stubs: { Teleport: true } } });
+    await flushPromises();
+    await wrapper.get('[data-testid="create-token-trigger"]').trigger("click");
+    await wrapper.get("#token-name").setValue("Trusted Codex");
+    await wrapper.get('[data-testid="token-scope-admin"]').setValue(true);
+
+    expect((wrapper.get('[data-testid="token-scope-read"]').element as HTMLInputElement).checked).toBe(false);
+    expect(wrapper.text()).toContain("所有当前和未来创建的知识库");
+    expect(wrapper.text()).toContain("不允许管理 Token、成员或管理员账号");
+    expect((wrapper.get("#token-expiry").element as HTMLInputElement).value).not.toBe("");
+
+    await wrapper.get('[data-testid="token-scope-read"]').setValue(true);
+    expect((wrapper.get('[data-testid="token-scope-admin"]').element as HTMLInputElement).checked).toBe(false);
+    await wrapper.get('[data-testid="token-scope-admin"]').setValue(true);
+    await wrapper.get("#token-form").trigger("submit");
+    await flushPromises();
+
+    expect(submitted).toMatchObject({
+      name: "Trusted Codex",
+      collectionIds: [],
+      scopes: ["knowledge:admin"],
+      expiresAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    });
+    expect(wrapper.text()).toContain("kcore_once");
+    wrapper.unmount();
+  });
+
+  it("does not offer the global Agent permission to non-bootstrap administrators", async () => {
+    const store = useAppStore();
+    store.initialized = true;
+    store.session = { principal: { email: "collection-admin@example.com", subject: "admin", bootstrapAdmin: false } };
+    store.collections = [{
+      id: "22222222-2222-4222-8222-222222222222",
+      name: "Scoped collection",
+      description: "",
+      role: "admin",
+      noteCount: 0,
+      updatedAt: "2026-08-10T08:00:00.000Z",
+    }];
+
+    const wrapper = mount(TokensView, { global: { stubs: { Teleport: true } } });
+    await flushPromises();
+    await wrapper.get('[data-testid="create-token-trigger"]').trigger("click");
+
+    expect(wrapper.find('[data-testid="token-scope-admin"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("最高知识权限");
+    wrapper.unmount();
+  });
+
   it("labels job table cells for the mobile card layout", async () => {
     vi.mocked(api).mockResolvedValue([{
       id: "job-1",

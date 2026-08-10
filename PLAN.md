@@ -1,7 +1,7 @@
 # AI 大脑知识库（Cloudflare Workers 版）项目计划
 
-> 版本：v1.3<br>
-> 更新日期：2026-07-14<br>
+> 版本：v1.4<br>
+> 更新日期：2026-08-10<br>
 > 技术栈：Vue 3 + TypeScript + Hono + Cloudflare Workers + R2 + D1 + Vectorize + Queues + MCP
 
 ## 1. 项目定位
@@ -10,7 +10,7 @@
 
 - **知识库主体**：Markdown 文档、版本、权限、审核和审计。
 - **RAG 能力**：把相关知识片段检索出来，供模型生成答案时引用；它是知识库的一项能力，不是整个系统。
-- **MCP 接口**：让 Codex、Claude Code 等 Agent 以标准协议搜索、读取和提议写入知识。
+- **MCP 接口**：让 Codex、Claude Code 等 Agent 以标准协议搜索、读取、提议记忆；受信任 Agent 可使用单独的最高权限 Token 直接维护知识。
 - **网页管理端**：供人维护文档、成员、Token、索引任务和 Agent 记忆提案。
 
 第一版优先保证：资料可控、来源可追溯、Agent 易接入、低运维成本。Markdown 是唯一的正文格式，R2 是正文的事实来源。
@@ -133,7 +133,12 @@ D1 保存知识库、成员角色、文档元数据、历史版本指针、切�
 
 ### 5.3 Agent 写入
 
-Agent 不直接修改正式文档。`propose_memory` 只生成待审核提案，管理员可查看来源、接受或拒绝；接受后才生成正式 Markdown 并进入索引。这条边界用于防止错误信息、提示注入内容和临时上下文污染长期知识。
+系统提供两条明确分离的写入路径：
+
+1. 普通 Agent 使用 `memory:propose` 生成待审核提案；管理员查看来源、接受或拒绝，接受后才生成正式 Markdown 并进入索引。
+2. 受信任 Agent 使用单独的 `knowledge:admin` Token 直接 CRUD 知识库与 Markdown。集合更新使用 `updated_at` 乐观锁，文档更新使用版本号乐观锁；删除必须同时匹配当前版本及精确名称/标题，所有操作按 Token 身份写入审计。
+
+`knowledge:admin` 只代表“最高知识权限”，不包含 Token、成员、管理员账号或登录配置管理，也不能给自己提权。它只能由 bootstrap 管理员创建和撤销，默认建议 24 小时内过期。
 
 ## 6. MCP 设计
 
@@ -147,9 +152,15 @@ Agent 不直接修改正式文档。`propose_memory` 只生成待审核提案，
 | `search_knowledge` | Tool | 混合检索并返回可引用片段 | `knowledge:read` |
 | `read_note` | Tool | 读取完整 Markdown | `knowledge:read` |
 | `propose_memory` | Tool | 提交待人工审核的长期记忆 | `memory:propose` |
+| `create_collection` | Tool | 创建知识库并保留签发者为人类管理员 | `knowledge:admin` |
+| `update_collection` | Tool | 使用 `updated_at` 乐观锁修改知识库 | `knowledge:admin` |
+| `delete_collection` | Tool | 精确名称确认后删除空知识库 | `knowledge:admin` |
+| `create_note` | Tool | 创建草稿或正式 Markdown | `knowledge:admin` |
+| `update_note` | Tool | 使用当前版本号更新 Markdown | `knowledge:admin` |
+| `delete_note` | Tool | 当前版本和精确标题确认后软删除 | `knowledge:admin` |
 | `kb://collections/{collectionId}/notes/{noteId}` | Resource Template | 以资源 URI 读取当前 Markdown | `knowledge:read` |
 
-Token 只展示一次明文，服务端只保存哈希；Token 必须限定知识库、Scope 和可选过期时间。不同 Agent 或设备分别创建 Token，便于撤销和审计。
+Token 只展示一次明文，服务端只保存哈希。普通 Token 必须限定知识库、Scope 和可选过期时间；`knowledge:admin` 不保存固定 `collectionIds`，运行时覆盖所有当前及未来知识库，并且不能与其他 Scope 混用。不同 Agent、设备和任务分别创建 Token，便于撤销、归因和审计。
 
 ## 7. 网页管理端范围
 
@@ -181,6 +192,14 @@ Token 只展示一次明文，服务端只保存哈希；Token 必须限定知�
 | 查看和搜索 | 是 | 是 | 是 |
 | 新建、编辑、恢复、重建索引 | 否 | 是 | 是 |
 | 管理成员、Token、审核提案 | 否 | 否 | 是 |
+
+### Agent Token Scope
+
+| Scope | 知识范围 | 允许操作 |
+| --- | --- | --- |
+| `knowledge:read` | 明确选择的知识库 | 列表、搜索、读取已发布 Markdown |
+| `memory:propose` | 明确选择的知识库 | 提交待人工审核的记忆提案 |
+| `knowledge:admin` | 所有当前及未来知识库 | 知识库与 Markdown CRUD、读取草稿、提交提案；不含 Token、成员和账号管理 |
 
 ### 安全要求
 
@@ -216,7 +235,7 @@ Worker 后端没有“给服务器分配多少内存”的配置，持久数据�
 - 搜索一次最多 10 个知识库、返回最多 8 条。
 - 单次 Queue batch 最多处理 5 条消息。
 - 文档保存仅对新版本重新索引。
-- MCP Token 使用最小知识库与 Scope；速率限制列入二期，生产异常告警在上线阶段配置。
+- MCP Token 使用最小知识库与 Scope；最高权限 Token 使用独立短有效期凭证；速率限制列入二期，生产异常告警在上线阶段配置。
 - 监控 R2 容量、D1 行数、向量数、Queue backlog、Worker 请求量及第三方模型费用。
 
 ## 10. 环境配置
@@ -258,8 +277,9 @@ Worker 后端没有“给服务器分配多少内存”的配置，持久数据�
 
 - [x] 知识库、成员、编辑预览、版本恢复和索引任务页面。
 - [x] 检索调试、提案审核和 MCP Token 页面。
-- [x] 6 个 MCP Tools 和 1 个 Resource Template。
+- [x] 普通 Token 的 6 个 MCP Tools、最高权限 Token 的 6 个 CRUD Tools，以及 1 个 Resource Template。
 - [x] Agent 记忆提案进入人工审核流程。
+- [x] 增加只能由 bootstrap 管理员签发的 `knowledge:admin`，并为集合/文档更新、删除和审计设置安全边界。
 
 ### 阶段 D：质量收口（已完成）
 
@@ -305,6 +325,8 @@ Worker 后端没有“给服务器分配多少内存”的配置，持久数据�
 - [ ] Markdown ZIP/Git 导入导出与 Obsidian 工作流。
 - [ ] 附件、图片和文档间双向链接。
 - [ ] 搜索评测集、命中反馈和模型版本对比。
+- [ ] 版本差异、归档/保留策略和按 Token 的操作/用量统计。
+- [ ] 事实级来源、矛盾检测、失效规则与时间知识图谱试验。
 - [ ] Token 速率限制、IP 策略和更细粒度审计查询。
 - [ ] 当数据规模或任务时长超出 Workers 边界时拆分独立索引服务。
 
@@ -318,6 +340,8 @@ Worker 后端没有“给服务器分配多少内存”的配置，持久数据�
 - 无权用户和无权 Token 不能通过猜测 ID 读取、搜索或重试其他知识库资源。
 - Codex 可通过 MCP 列出知识库、搜索片段、读取完整 Markdown 并提交提案。
 - Agent 提案在管理员批准前不会进入正式搜索结果。
+- 最高权限 Token 可完成知识库和 Markdown CRUD；普通 Token 看不到写工具，非 bootstrap 管理员不能创建、查看或撤销最高权限 Token。
+- Agent 更新遇到旧 `updated_at`/版本号时返回冲突，删除确认不一致时不得改变数据，审计记录必须归因到具体 Token。
 
 工程验收：
 
@@ -334,7 +358,7 @@ Worker 后端没有“给服务器分配多少内存”的配置，持久数据�
 | Embedding 供应商不支持 1024 维 | 上线前做维度探测；不兼容则重建 Vectorize 索引并同步修改配置 |
 | 免费额度不足 | 先限制文档大小、批次和检索 topK；根据监控升级单项服务或迁移索引器 |
 | D1 与 R2 写入不是跨服务事务 | 使用版本号、内容哈希、索引任务和定时恢复实现最终一致性 |
-| Agent 写入污染知识 | 只允许提交提案，人工批准后才发布和索引 |
+| Agent 写入污染知识 | 默认只允许提案；最高权限 Token 单独签发、短期有效、带乐观锁/精确删除确认/Token 审计，并由人按任务撤销 |
 | 提示注入藏在知识正文 | 检索结果标注来源；Agent 端将知识视为数据而非系统指令；保持最小权限 |
 | 模型切换导致召回漂移 | 保存模型/索引版本，建立固定查询评测集，全量重建后再切流 |
 | Worker 执行时间不适合未来重任务 | Queue 小批处理；超出限制时只迁移异步索引消费者 |
@@ -347,6 +371,9 @@ MVP 完成的标志不是“页面能打开”，而是以下闭环在生产环�
 人维护 Markdown -> R2 留存版本 -> Queue 建立混合索引
 -> Codex 通过 MCP 检索并引用 -> Agent 提交记忆提案
 -> 人工审核 -> 新知识重新进入索引
+
+受信任 Agent -> 最高知识权限 Token -> 乐观锁/精确删除确认
+-> Token 审计 -> R2 版本与 Queue 索引
 ```
 
 完成阶段 D 和 E 后，即可作为个人或小团队的第一版 AI 大脑知识库正式使用。

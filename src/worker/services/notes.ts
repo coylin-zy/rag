@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, inArray, ne } from "drizzle-orm";
 
 import type { NoteSummary } from "@shared/contracts";
-import type { AdminPrincipal, Env } from "@worker/env";
+import type { AdminPrincipal, Env, KnowledgePrincipal, McpPrincipal } from "@worker/env";
 
 import { createDb } from "../db/client";
 import { noteVersions, notes } from "../db/schema";
@@ -10,6 +10,7 @@ import { writeAudit } from "../lib/audit";
 import { sha256 } from "../lib/crypto";
 import { ApiError } from "../lib/errors";
 import { canonicalizeMarkdown, parseMarkdownDocument } from "../lib/markdown";
+import { isMcpPrincipal, principalActor, requireKnowledgeRole } from "../lib/principal";
 import { nowIso, parseJson } from "../lib/utils";
 import { enqueueJob } from "./jobs";
 
@@ -93,7 +94,7 @@ export async function listNotes(env: Env, principal: AdminPrincipal, collectionI
 export async function listNotesForCollections(
   env: Env,
   collectionIds: string[],
-  options: { tags?: string[]; updatedAfter?: string; limit?: number } = {},
+  options: { tags?: string[]; updatedAfter?: string; limit?: number; includeDrafts?: boolean } = {},
 ): Promise<NoteSummary[]> {
   if (collectionIds.length === 0) return [];
   const limit = Math.min(options.limit ?? 100, 200);
@@ -103,7 +104,7 @@ export async function listNotesForCollections(
     .from(notes)
     .where(and(
       inArray(notes.collectionId, collectionIds),
-      eq(notes.status, "published"),
+      options.includeDrafts ? ne(notes.status, "deleted") : eq(notes.status, "published"),
       options.updatedAfter ? gt(notes.updatedAt, options.updatedAfter) : undefined,
     ))
     .orderBy(desc(notes.updatedAt))
@@ -130,19 +131,28 @@ export async function readNoteForCollections(env: Env, collectionIds: string[], 
   return { ...toSummary(note), markdown };
 }
 
+export async function readNoteForMcpAdmin(env: Env, principal: McpPrincipal, noteId: string) {
+  const note = await getNoteRow(env, noteId);
+  await requireKnowledgeRole(env, principal, note.collectionId, "viewer");
+  if (note.status === "deleted") throw new ApiError(404, "note_not_found", "文档不存在或无权访问");
+  const markdown = await getVersionMarkdown(env, note.id, note.version);
+  return { ...toSummary(note), markdown };
+}
+
 export async function createNote(
   env: Env,
-  principal: AdminPrincipal,
+  principal: KnowledgePrincipal,
   collectionId: string,
   markdownInput: string,
 ): Promise<NoteSummary & { jobId: string }> {
-  await requireCollectionRole(env, principal, collectionId, "editor");
+  await requireKnowledgeRole(env, principal, collectionId, "editor");
   const db = createDb(env.DB);
   const id = crypto.randomUUID();
   const version = 1;
   const document = canonicalizeMarkdown(markdownInput, { id, version });
   const contentHash = await sha256(document.markdown);
   const now = nowIso();
+  const actor = principalActor(principal);
   const r2Key = await writeVersionObject(env, { collectionId, noteId: id, version, markdown: document.markdown, contentHash });
 
   await db.batch([
@@ -157,8 +167,8 @@ export async function createNote(
       contentHash,
       createdAt: now,
       updatedAt: now,
-      createdBy: principal.email,
-      updatedBy: principal.email,
+      createdBy: actor.authorId,
+      updatedBy: actor.authorId,
     }),
     db.insert(noteVersions).values({
       noteId: id,
@@ -168,12 +178,12 @@ export async function createNote(
       title: document.frontmatter.title,
       tagsJson: JSON.stringify(document.frontmatter.tags),
       createdAt: now,
-      createdBy: principal.email,
+      createdBy: actor.authorId,
     }),
   ]);
   await refreshCurrentObject(env, collectionId, id, version, document.markdown, contentHash);
   const jobId = await enqueueJob(env, { type: "index", noteId: id, version });
-  await writeAudit(env, { actorType: "user", actorId: principal.email, action: "note.create", resourceType: "note", resourceId: id, collectionIds: [collectionId], metadata: { version } });
+  await writeAudit(env, { actorType: actor.actorType, actorId: actor.actorId, action: "note.create", resourceType: "note", resourceId: id, collectionIds: [collectionId], metadata: { version } });
 
   const row = await getNoteRow(env, id);
   return { ...toSummary(row), jobId };
@@ -181,14 +191,14 @@ export async function createNote(
 
 export async function updateNote(
   env: Env,
-  principal: AdminPrincipal,
+  principal: KnowledgePrincipal,
   noteId: string,
   expectedVersion: number,
   markdownInput: string,
 ): Promise<NoteSummary & { jobId: string | null }> {
   const db = createDb(env.DB);
   const current = await getNoteRow(env, noteId);
-  await requireCollectionRole(env, principal, current.collectionId, "editor");
+  await requireKnowledgeRole(env, principal, current.collectionId, "editor");
   if (current.status === "deleted") throw new ApiError(409, "note_deleted", "已删除文档不能继续更新");
   if (current.version !== expectedVersion) {
     throw new ApiError(409, "version_conflict", `文档已更新到版本 ${current.version}`);
@@ -206,6 +216,7 @@ export async function updateNote(
   const contentHash = await sha256(document.markdown);
 
   const now = nowIso();
+  const actor = principalActor(principal);
   const r2Key = await writeVersionObject(env, {
     collectionId: current.collectionId,
     noteId,
@@ -225,7 +236,7 @@ export async function updateNote(
           version,
           contentHash,
           updatedAt: now,
-          updatedBy: principal.email,
+          updatedBy: actor.authorId,
         })
         .where(and(eq(notes.id, noteId), eq(notes.version, expectedVersion))),
       db.insert(noteVersions).values({
@@ -236,7 +247,7 @@ export async function updateNote(
         title: document.frontmatter.title,
         tagsJson: JSON.stringify(document.frontmatter.tags),
         createdAt: now,
-        createdBy: principal.email,
+        createdBy: actor.authorId,
       }),
     ]);
   } catch {
@@ -245,18 +256,41 @@ export async function updateNote(
 
   await refreshCurrentObject(env, current.collectionId, noteId, version, document.markdown, contentHash);
   const jobId = await enqueueJob(env, { type: "index", noteId, version });
-  await writeAudit(env, { actorType: "user", actorId: principal.email, action: "note.update", resourceType: "note", resourceId: noteId, collectionIds: [current.collectionId], metadata: { version } });
+  await writeAudit(env, { actorType: actor.actorType, actorId: actor.actorId, action: "note.update", resourceType: "note", resourceId: noteId, collectionIds: [current.collectionId], metadata: { version } });
   return { ...toSummary(await getNoteRow(env, noteId)), jobId };
 }
 
-export async function deleteNote(env: Env, principal: AdminPrincipal, noteId: string): Promise<string> {
+export async function deleteNote(
+  env: Env,
+  principal: KnowledgePrincipal,
+  noteId: string,
+  safety?: { expectedVersion: number; confirmationTitle: string },
+): Promise<string> {
   const db = createDb(env.DB);
   const note = await getNoteRow(env, noteId);
-  await requireCollectionRole(env, principal, note.collectionId, "editor");
+  await requireKnowledgeRole(env, principal, note.collectionId, "editor");
+  if (isMcpPrincipal(principal)) {
+    if (!safety || safety.expectedVersion !== note.version) {
+      throw new ApiError(409, "version_conflict", `文档已更新到版本 ${note.version}`);
+    }
+    if (safety.confirmationTitle !== note.title) {
+      throw new ApiError(409, "note_confirmation_mismatch", "删除文档必须提供完全一致的标题确认");
+    }
+  }
   const now = nowIso();
-  await db.update(notes).set({ status: "deleted", deletedAt: now, updatedAt: now, updatedBy: principal.email }).where(eq(notes.id, noteId));
+  const actor = principalActor(principal);
+  const result = await db.update(notes)
+    .set({ status: "deleted", deletedAt: now, updatedAt: now, updatedBy: actor.authorId })
+    .where(and(
+      eq(notes.id, noteId),
+      ne(notes.status, "deleted"),
+      isMcpPrincipal(principal) ? eq(notes.version, safety?.expectedVersion ?? -1) : undefined,
+    ));
+  if (Number(result.meta.changes) !== 1) {
+    throw new ApiError(409, "version_conflict", "文档在删除前已被其他操作更新");
+  }
   const jobId = await enqueueJob(env, { type: "delete", noteId });
-  await writeAudit(env, { actorType: "user", actorId: principal.email, action: "note.delete", resourceType: "note", resourceId: noteId, collectionIds: [note.collectionId] });
+  await writeAudit(env, { actorType: actor.actorType, actorId: actor.actorId, action: "note.delete", resourceType: "note", resourceId: noteId, collectionIds: [note.collectionId], metadata: { version: note.version } });
   return jobId;
 }
 

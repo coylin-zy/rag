@@ -1,3 +1,5 @@
+import type { TokenScope } from "@shared/contracts";
+
 export interface Env {
   AI: Ai;
   DB: D1Database;
@@ -44,6 +46,9 @@ export interface AdminPrincipal {
 export interface McpPrincipal {
   tokenId: string;
   name: string;
+  createdBy: string;
   collectionIds: string[];
-  scopes: Array<"knowledge:read" | "memory:propose">;
+  scopes: TokenScope[];
 }
+
+export type KnowledgePrincipal = AdminPrincipal | McpPrincipal;

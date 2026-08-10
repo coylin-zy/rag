@@ -1,13 +1,14 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import type { CollectionSummary, Role } from "@shared/contracts";
-import type { AdminPrincipal, Env } from "@worker/env";
+import type { AdminPrincipal, Env, KnowledgePrincipal } from "@worker/env";
 
 import { createDb } from "../db/client";
 import { collections, memberships, notes } from "../db/schema";
 import { requireCollectionRole } from "../lib/auth";
 import { writeAudit } from "../lib/audit";
 import { ApiError } from "../lib/errors";
+import { isKnowledgeAdmin, isMcpPrincipal, principalActor, requireKnowledgeRole } from "../lib/principal";
 import { normalizeEmail, nowIso } from "../lib/utils";
 
 function translateLastAdminError(error: unknown): never {
@@ -88,26 +89,78 @@ export async function listCollections(env: Env, principal: AdminPrincipal): Prom
 
 export async function createCollection(
   env: Env,
-  principal: AdminPrincipal,
+  principal: KnowledgePrincipal,
   input: { name: string; description: string },
 ): Promise<CollectionSummary> {
+  if (isMcpPrincipal(principal) && !isKnowledgeAdmin(principal)) {
+    throw new ApiError(403, "scope_required", "Token 缺少 knowledge:admin 权限");
+  }
   const db = createDb(env.DB);
   const id = crypto.randomUUID();
   const now = nowIso();
+  const actor = principalActor(principal);
+  const ownerEmail = isMcpPrincipal(principal) ? principal.createdBy : principal.email;
   await db.batch([
-    db.insert(collections).values({ id, name: input.name, description: input.description, createdAt: now, updatedAt: now, createdBy: principal.email }),
-    db.insert(memberships).values({ collectionId: id, userEmail: principal.email, role: "admin", createdAt: now }),
+    db.insert(collections).values({ id, name: input.name, description: input.description, createdAt: now, updatedAt: now, createdBy: actor.authorId }),
+    db.insert(memberships).values({ collectionId: id, userEmail: ownerEmail, role: "admin", createdAt: now }),
   ]);
-  await writeAudit(env, { actorType: "user", actorId: principal.email, action: "collection.create", resourceType: "collection", resourceId: id, collectionIds: [id] });
+  await writeAudit(env, { actorType: actor.actorType, actorId: actor.actorId, action: "collection.create", resourceType: "collection", resourceId: id, collectionIds: [id] });
   return { id, name: input.name, description: input.description, role: "admin", noteCount: 0, updatedAt: now };
 }
 
-export async function deleteCollection(env: Env, principal: AdminPrincipal, collectionId: string) {
-  await requireCollectionRole(env, principal, collectionId, "admin");
+export async function updateCollection(
+  env: Env,
+  principal: KnowledgePrincipal,
+  collectionId: string,
+  expectedUpdatedAt: string,
+  input: { name: string; description: string },
+): Promise<CollectionSummary> {
+  await requireKnowledgeRole(env, principal, collectionId, "admin");
+  const currentTime = nowIso();
+  const now = currentTime > expectedUpdatedAt
+    ? currentTime
+    : new Date(new Date(expectedUpdatedAt).getTime() + 1).toISOString();
+  const result = await env.DB.prepare(`
+    UPDATE collections SET name = ?, description = ?, updated_at = ?
+    WHERE id = ? AND updated_at = ?
+  `).bind(input.name, input.description, now, collectionId, expectedUpdatedAt).run();
+  if (Number(result.meta.changes) !== 1) {
+    throw new ApiError(409, "collection_version_conflict", "知识库已被其他操作更新，请重新读取后再修改");
+  }
+  const actor = principalActor(principal);
+  await writeAudit(env, {
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    action: "collection.update",
+    resourceType: "collection",
+    resourceId: collectionId,
+    collectionIds: [collectionId],
+    metadata: { expectedUpdatedAt, name: input.name },
+  });
+  const row = await env.DB.prepare(`
+    SELECT c.id, c.name, c.description, c.updated_at AS updatedAt,
+           sum(case when n.status != 'deleted' then 1 else 0 end) AS noteCount
+    FROM collections c LEFT JOIN notes n ON n.collection_id = c.id
+    WHERE c.id = ? GROUP BY c.id
+  `).bind(collectionId).first<{ id: string; name: string; description: string; updatedAt: string; noteCount: number }>();
+  if (!row) throw new ApiError(404, "collection_not_found", "知识库不存在或无权访问");
+  return { ...row, noteCount: Number(row.noteCount), role: "admin" };
+}
+
+export async function deleteCollection(
+  env: Env,
+  principal: KnowledgePrincipal,
+  collectionId: string,
+  confirmationName?: string,
+) {
+  await requireKnowledgeRole(env, principal, collectionId, "admin");
   const collection = await env.DB.prepare(
-    "SELECT id FROM collections WHERE id = ? LIMIT 1",
-  ).bind(collectionId).first<{ id: string }>();
+    "SELECT id, name FROM collections WHERE id = ? LIMIT 1",
+  ).bind(collectionId).first<{ id: string; name: string }>();
   if (!collection) throw new ApiError(404, "collection_not_found", "知识库不存在或无权访问");
+  if (isMcpPrincipal(principal) && confirmationName !== collection.name) {
+    throw new ApiError(409, "collection_confirmation_mismatch", "删除知识库必须提供完全一致的名称确认");
+  }
 
   const now = nowIso();
   const usage = await env.DB.prepare(`
@@ -147,16 +200,18 @@ export async function deleteCollection(env: Env, principal: AdminPrincipal, coll
   }
 
   const auditId = crypto.randomUUID();
+  const actor = principalActor(principal);
   await env.DB.batch([
     env.DB.prepare("DELETE FROM collections WHERE id = ?").bind(collectionId),
     env.DB.prepare(`
       INSERT INTO audit_logs (
         id, actor_type, actor_id, action, resource_type, resource_id,
         collection_ids_json, metadata_json, created_at
-      ) VALUES (?, 'user', ?, 'collection.delete', 'collection', ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, 'collection.delete', 'collection', ?, ?, ?, ?)
     `).bind(
       auditId,
-      principal.email,
+      actor.actorType,
+      actor.actorId,
       collectionId,
       JSON.stringify([collectionId]),
       JSON.stringify({

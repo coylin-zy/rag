@@ -158,7 +158,7 @@ Nginx 对 `/api/` 的 `proxy_pass` 不包含路径后缀，因此会原样保留
 
 ## 连接 Codex MCP
 
-在管理后台的“`MCP Token`”页面创建 Token。只读 Agent 使用 `knowledge:read`；需要提交记忆提案时再增加 `memory:propose`。
+在管理后台的“`MCP Token`”页面创建 Token。普通 Agent 使用 `knowledge:read`；需要提交记忆提案时再增加 `memory:propose`。只有 `BOOTSTRAP_ADMIN_EMAILS` 中的初始管理员能签发 `knowledge:admin`：它覆盖所有当前及未来知识库，并允许受信任 Agent 直接 CRUD 知识库与 Markdown，但不能管理 Token、成员或管理员账号。建议为最高权限 Token 单独命名、设置较短有效期（页面默认 24 小时），任务结束后立即撤销。
 
 先把 Token 放入运行 Codex 的环境变量：
 
@@ -176,7 +176,7 @@ startup_timeout_sec = 20
 tool_timeout_sec = 60
 ```
 
-连接后可发现以下 MCP Tools：
+普通 Token 连接后可发现以下 MCP Tools：
 
 - `list_collections`
 - `list_notes`
@@ -185,13 +185,22 @@ tool_timeout_sec = 60
 - `read_note`
 - `propose_memory`
 
+`knowledge:admin` Token 还会发现以下 6 个写工具：
+
+- `create_collection`
+- `update_collection`
+- `delete_collection`
+- `create_note`
+- `update_note`
+- `delete_note`
+
 文档资源 URI 为：
 
 ```text
 kb://collections/{collectionId}/notes/{noteId}
 ```
 
-Agent 对正式知识只读。`propose_memory` 只创建待审核提案，管理员批准后才生成正式 Markdown 并进入索引。
+普通 Token 对正式知识只读；`propose_memory` 只创建待审核提案，管理员批准后才生成正式 Markdown 并进入索引。最高权限 Token 可以直接写正式知识，但集合更新必须携带最后读取的 `updated_at`，文档更新必须携带当前 `version`，删除还必须精确确认知识库名称或文档标题。所有 Agent 写入都会记录 Token 身份和不可变审计事件。
 
 ## 数据布局
 
@@ -236,7 +245,7 @@ Windows 下 Cloudflare 测试运行时不能从中文路径启动。`pnpm test` 
 - 仅接受 UTF-8 Markdown，单篇最大 2 MiB。
 - 不处理图片、附件、PDF、Office、网页抓取或 OCR。
 - 不提供聊天页面，也不调用模型生成答案。
-- 不允许 Agent 直接修改正式知识。
+- 普通 Agent 不允许直接修改正式知识；仅显式签发的 `knowledge:admin` Token 可执行带版本锁、删除确认和审计的 CRUD。
 - 免费额度随 Cloudflare 套餐变化，上线前以账户 Dashboard 和官方 Limits 页面为准。
 
-完整架构、阶段和验收标准见 [PLAN.md](./PLAN.md)。
+完整架构、阶段和验收标准见 [PLAN.md](./PLAN.md)。与 GitHub 开源 Agent 知识库的对比和后续优先级见 [OPEN_SOURCE_GAP.md](./OPEN_SOURCE_GAP.md)。

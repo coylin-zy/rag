@@ -293,6 +293,13 @@ a { color: inherit; }
 .tag-row, .scope-list { display: flex; gap: 5px; flex-wrap: wrap; }
 .tag { display: inline-flex; padding: 2px 7px; color: #424851; background: #eef0f3; border-radius: 999px; font-size: 11px; }
 .scope-list span { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 11px; }
+.scope-list .scope-admin { color: var(--danger); font-weight: 700; }
+.token-global-tag { color: #8d302d; background: #fff5f4; border-color: #f0cecc; }
+.check-row--admin { align-items: flex-start; border-color: #e8b9b6; background: #fffafa; }
+.check-row--admin span { display: grid; gap: 3px; }
+.check-row--admin strong { color: #8d302d; font-size: 13px; }
+.check-row--admin small { color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.token-admin-warning { margin: 10px 0 0; padding: 11px 12px; color: #8d302d; background: #fff5f4; border: 1px solid #f0cecc; border-radius: 6px; font-size: 12px; line-height: 1.6; }
 .token-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650; }
 .token-state::before { width: 7px; height: 7px; border-radius: 50%; content: ""; background: currentColor; }
 .token-state--active { color: var(--success); }

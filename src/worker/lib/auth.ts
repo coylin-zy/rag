@@ -250,6 +250,7 @@ export async function authenticateMcpToken(env: Env, authorization: string | und
   return {
     tokenId: token.id,
     name: token.name,
+    createdBy: token.createdBy,
     collectionIds: parseJson<string[]>(token.collectionIdsJson, []),
     scopes: parseJson<McpPrincipal["scopes"]>(token.scopesJson, []),
   };

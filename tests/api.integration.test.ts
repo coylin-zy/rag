@@ -139,6 +139,86 @@ describe("management API, D1 and R2", () => {
     expect("data" in jobsForViewer.body && jobsForViewer.body.data).toEqual([]);
   });
 
+  it("reserves highest-permission Token creation and revocation for bootstrap administrators", async () => {
+    const collection = await createCollection("Delegated token boundary");
+    await apiRequest(
+      `/api/v1/collections/${collection.id}/members`,
+      jsonInit("PUT", { email: "delegated-admin@example.com", role: "admin" }),
+    );
+
+    const mixedScopes = await apiRequest(
+      "/api/v1/tokens",
+      jsonInit("POST", {
+        name: "Invalid mixed token",
+        collectionIds: [],
+        scopes: ["knowledge:admin", "knowledge:read"],
+        expiresAt: null,
+      }),
+    );
+    expect(mixedScopes.response.status).toBe(422);
+
+    const unscopedRead = await apiRequest(
+      "/api/v1/tokens",
+      jsonInit("POST", {
+        name: "Invalid unscoped reader",
+        collectionIds: [],
+        scopes: ["knowledge:read"],
+        expiresAt: null,
+      }),
+    );
+    expect(unscopedRead.response.status).toBe(422);
+
+    const delegatedCreate = await apiRequest(
+      "/api/v1/tokens",
+      jsonInit("POST", {
+        name: "Delegated global token",
+        collectionIds: [],
+        scopes: ["knowledge:admin"],
+        expiresAt: null,
+      }),
+      "delegated-admin@example.com",
+    );
+    expect(delegatedCreate.response.status).toBe(403);
+    expect("error" in delegatedCreate.body && delegatedCreate.body.error.code).toBe("bootstrap_admin_required");
+
+    const created = await apiRequest<{ id: string; collectionIds: string[]; scopes: string[] }>(
+      "/api/v1/tokens",
+      jsonInit("POST", {
+        name: "Bootstrap global token",
+        collectionIds: [collection.id],
+        scopes: ["knowledge:admin"],
+        expiresAt: null,
+      }),
+    );
+    expect(created.response.status).toBe(201);
+    if (!("data" in created.body)) throw new Error("Highest-permission Token creation failed");
+    const globalToken = created.body.data;
+    expect(globalToken).toMatchObject({ collectionIds: [], scopes: ["knowledge:admin"] });
+
+    const delegatedList = await apiRequest<Array<{ id: string }>>(
+      "/api/v1/tokens",
+      {},
+      "delegated-admin@example.com",
+    );
+    expect("data" in delegatedList.body && delegatedList.body.data.some((token) => token.id === globalToken.id)).toBe(false);
+
+    const delegatedRevoke = await apiRequest(
+      `/api/v1/tokens/${globalToken.id}`,
+      { method: "DELETE" },
+      "delegated-admin@example.com",
+    );
+    expect(delegatedRevoke.response.status).toBe(403);
+    expect("error" in delegatedRevoke.body && delegatedRevoke.body.error.code).toBe("bootstrap_admin_required");
+
+    const stillActive = await env.DB.prepare("SELECT revoked_at AS revokedAt FROM api_tokens WHERE id = ?")
+      .bind(globalToken.id)
+      .first<{ revokedAt: string | null }>();
+    expect(stillActive?.revokedAt).toBeNull();
+
+    const bootstrapRevoke = await apiRequest(`/api/v1/tokens/${globalToken.id}`, { method: "DELETE" });
+    expect(bootstrapRevoke.response.status).toBe(200);
+  });
+
   it("deletes only unused collections with administrator permission and records the purge", async () => {
     vi.spyOn(env.INDEX_QUEUE, "send").mockResolvedValue(queueSendResponse());
     const missingDelete = await apiRequest(

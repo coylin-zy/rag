@@ -33,6 +33,11 @@ const mcpEndpoint = configuredMcpEndpoint || `${window.location.origin}/mcp`;
 
 const activeTokens = computed(() => tokens.value.filter((token) => !token.revokedAt));
 const adminCollections = computed(() => appStore.collections.filter((collection) => collection.role === "admin"));
+const canManageGlobalAdmin = computed(() => appStore.session?.principal.bootstrapAdmin === true);
+const globalAdminSelected = computed(() => form.value.scopes.includes("knowledge:admin"));
+const canCreateToken = computed(() => form.value.scopes.length > 0 && (
+  globalAdminSelected.value || form.value.collectionIds.length > 0
+));
 
 function formatDate(value: string | null) {
   if (!value) return "从未";
@@ -41,6 +46,50 @@ function formatDate(value: string | null) {
 
 function collectionName(id: string) {
   return appStore.collections.find((item) => item.id === id)?.name ?? id.slice(0, 8);
+}
+
+function scopeName(scope: string) {
+  if (scope === "knowledge:admin") return "最高知识权限";
+  if (scope === "knowledge:read") return "读取与检索";
+  if (scope === "memory:propose") return "记忆提案";
+  return scope;
+}
+
+function hasGlobalAdmin(token: TokenRow) {
+  return token.scopes.includes("knowledge:admin");
+}
+
+function localDateTime(value: Date) {
+  const offset = value.getTimezoneOffset() * 60_000;
+  return new Date(value.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function toggleGlobalAdmin(checked: boolean) {
+  if (checked) {
+    form.value.scopes = ["knowledge:admin"];
+    form.value.collectionIds = [];
+    if (!form.value.expiresAt) form.value.expiresAt = localDateTime(new Date(Date.now() + 24 * 60 * 60 * 1000));
+    return;
+  }
+  form.value.scopes = ["knowledge:read"];
+  form.value.collectionIds = adminCollections.value.map((item) => item.id);
+}
+
+function toggleRegularScope(scope: "knowledge:read" | "memory:propose", checked: boolean) {
+  const next = form.value.scopes.filter((item) => item !== "knowledge:admin" && item !== scope);
+  if (checked) next.push(scope);
+  form.value.scopes = next;
+  if (form.value.collectionIds.length === 0) {
+    form.value.collectionIds = adminCollections.value.map((item) => item.id);
+  }
+}
+
+function changeGlobalAdmin(event: Event) {
+  toggleGlobalAdmin((event.target as HTMLInputElement).checked);
+}
+
+function changeRegularScope(scope: "knowledge:read" | "memory:propose", event: Event) {
+  toggleRegularScope(scope, (event.target as HTMLInputElement).checked);
 }
 
 async function loadTokens() {
@@ -104,7 +153,7 @@ onMounted(loadTokens);
       <div><span class="page-eyebrow">AGENT ACCESS</span><h2>MCP 访问凭证</h2><p>按知识库和工具权限向 Agent 签发最小范围的访问令牌。</p></div>
       <div class="toolbar-actions">
         <button class="button button--secondary" type="button" :disabled="loading" @click="loadTokens"><RefreshCw :size="17" />刷新</button>
-        <button class="button button--primary" type="button" :disabled="adminCollections.length === 0" @click="openCreate"><Plus :size="17" />创建 Token</button>
+        <button data-testid="create-token-trigger" class="button button--primary" type="button" :disabled="adminCollections.length === 0 && !canManageGlobalAdmin" @click="openCreate"><Plus :size="17" />创建 Token</button>
       </div>
     </div>
 
@@ -123,8 +172,8 @@ onMounted(loadTokens);
           <tbody>
             <tr v-for="token in tokens" :key="token.id">
               <td data-label="名称"><div class="table-title">{{ token.name }}</div><div class="table-meta mono">{{ token.prefix }}...</div></td>
-              <td data-label="知识库"><div class="tag-row"><span v-for="id in token.collectionIds" :key="id" class="tag">{{ collectionName(id) }}</span></div></td>
-              <td data-label="权限"><div class="scope-list"><span v-for="scope in token.scopes" :key="scope"><ShieldCheck :size="13" />{{ scope }}</span></div></td>
+              <td data-label="知识库"><div class="tag-row"><span v-if="hasGlobalAdmin(token)" class="tag token-global-tag">所有当前和未来知识库</span><span v-for="id in token.collectionIds" v-else :key="id" class="tag">{{ collectionName(id) }}</span></div></td>
+              <td data-label="权限"><div class="scope-list"><span v-for="scope in token.scopes" :key="scope" :class="{ 'scope-admin': scope === 'knowledge:admin' }"><ShieldCheck :size="13" />{{ scopeName(scope) }}</span></div></td>
               <td data-label="最近使用"><div>{{ formatDate(token.lastUsedAt) }}</div><div v-if="token.expiresAt" class="table-meta">到期 {{ formatDate(token.expiresAt) }}</div></td>
               <td data-label="状态"><span class="token-state" :class="token.revokedAt ? 'token-state--revoked' : 'token-state--active'">{{ token.revokedAt ? '已撤销' : '有效' }}</span></td>
               <td data-label="操作"><div class="table-actions"><button class="icon-button icon-button--small" type="button" title="撤销 Token" aria-label="撤销 Token" :disabled="Boolean(token.revokedAt)" @click="revoke(token.id, token.name)"><Trash2 :size="16" /></button></div></td>
@@ -138,11 +187,11 @@ onMounted(loadTokens);
   <ModalDialog v-if="showCreate" title="创建 MCP Token" description="Token 只显示一次，并按所选知识库和权限生效。" @close="showCreate = false">
     <form id="token-form" class="form-grid" @submit.prevent="createNewToken">
       <div class="field"><label for="token-name">名称</label><input id="token-name" v-model="form.name" class="input" required maxlength="80" placeholder="Codex 主工作区" autofocus /></div>
-      <fieldset class="field"><legend class="field-label">知识库</legend><div class="check-list"><label v-for="collection in adminCollections" :key="collection.id" class="check-row"><input v-model="form.collectionIds" type="checkbox" :value="collection.id" />{{ collection.name }}</label></div></fieldset>
-      <fieldset class="field"><legend class="field-label">权限范围</legend><div class="check-list"><label class="check-row"><input v-model="form.scopes" type="checkbox" value="knowledge:read" />读取与检索正式知识</label><label class="check-row"><input v-model="form.scopes" type="checkbox" value="memory:propose" />提交待审核记忆</label></div></fieldset>
+      <fieldset class="field"><legend class="field-label">知识库</legend><p v-if="globalAdminSelected" class="field-hint">最高权限自动覆盖所有当前和未来创建的知识库，无需逐个选择。</p><div v-else class="check-list"><label v-for="collection in adminCollections" :key="collection.id" class="check-row"><input v-model="form.collectionIds" type="checkbox" :value="collection.id" />{{ collection.name }}</label></div></fieldset>
+      <fieldset class="field"><legend class="field-label">权限范围</legend><div class="check-list"><label class="check-row"><input data-testid="token-scope-read" type="checkbox" :checked="form.scopes.includes('knowledge:read')" @change="changeRegularScope('knowledge:read', $event)" />读取与检索正式知识</label><label class="check-row"><input data-testid="token-scope-propose" type="checkbox" :checked="form.scopes.includes('memory:propose')" @change="changeRegularScope('memory:propose', $event)" />提交待审核记忆</label><label v-if="canManageGlobalAdmin" class="check-row check-row--admin"><input data-testid="token-scope-admin" type="checkbox" :checked="globalAdminSelected" @change="changeGlobalAdmin" /><span><strong>最高知识权限</strong><small>允许 Agent 通过 MCP 创建、读取、修改和删除知识库与 Markdown，不允许管理 Token、成员或管理员账号。</small></span></label></div><p v-if="globalAdminSelected" class="token-admin-warning">这是高风险凭证。删除操作仍要求版本锁和名称/标题精确确认，建议设置较短有效期并仅交给受信任 Agent。</p></fieldset>
       <div class="field"><label for="token-expiry">到期时间</label><input id="token-expiry" v-model="form.expiresAt" class="input" type="datetime-local" /><p class="field-hint">留空表示不自动过期。</p></div>
     </form>
-    <template #footer><button class="button button--secondary" type="button" @click="showCreate = false">取消</button><button class="button button--primary" type="submit" form="token-form" :disabled="creating || form.collectionIds.length === 0 || form.scopes.length === 0"><span v-if="creating" class="spinner" />创建</button></template>
+    <template #footer><button class="button button--secondary" type="button" @click="showCreate = false">取消</button><button class="button button--primary" type="submit" form="token-form" :disabled="creating || !canCreateToken"><span v-if="creating" class="spinner" />创建</button></template>
   </ModalDialog>
 
   <ModalDialog v-if="revealedToken" title="Token 已创建" description="关闭后将无法再次查看完整值。" @close="revealedToken = ''">

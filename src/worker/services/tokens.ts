@@ -1,5 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 
+import type { TokenScope } from "@shared/contracts";
 import type { AdminPrincipal, Env } from "@worker/env";
 
 import { createDb } from "../db/client";
@@ -7,6 +8,7 @@ import { apiTokens } from "../db/schema";
 import { requireCollectionRole } from "../lib/auth";
 import { writeAudit } from "../lib/audit";
 import { generateToken, sha256 } from "../lib/crypto";
+import { ApiError } from "../lib/errors";
 import { nowIso, parseJson } from "../lib/utils";
 
 function publicToken(row: typeof apiTokens.$inferSelect) {
@@ -51,11 +53,16 @@ export async function createToken(
   input: {
     name: string;
     collectionIds: string[];
-    scopes: Array<"knowledge:read" | "memory:propose">;
+    scopes: TokenScope[];
     expiresAt: string | null;
   },
 ) {
-  await Promise.all(input.collectionIds.map((id) => requireCollectionRole(env, principal, id, "admin")));
+  const globalAdmin = input.scopes.includes("knowledge:admin");
+  if (globalAdmin && !principal.bootstrapAdmin) {
+    throw new ApiError(403, "bootstrap_admin_required", "只有初始管理员可以创建最高权限 Agent Token");
+  }
+  const collectionIds = globalAdmin ? [] : input.collectionIds;
+  await Promise.all(collectionIds.map((id) => requireCollectionRole(env, principal, id, "admin")));
   const db = createDb(env.DB);
   const id = crypto.randomUUID();
   const rawToken = generateToken();
@@ -66,14 +73,14 @@ export async function createToken(
     name: input.name,
     tokenHash: await sha256(rawToken),
     tokenPrefix: prefix,
-    collectionIdsJson: JSON.stringify(input.collectionIds),
+    collectionIdsJson: JSON.stringify(collectionIds),
     scopesJson: JSON.stringify(input.scopes),
     createdAt: now,
     createdBy: principal.email,
     expiresAt: input.expiresAt,
   });
-  await writeAudit(env, { actorType: "user", actorId: principal.email, action: "token.create", resourceType: "api_token", resourceId: id, collectionIds: input.collectionIds, metadata: { scopes: input.scopes } });
-  return { id, name: input.name, token: rawToken, prefix, collectionIds: input.collectionIds, scopes: input.scopes, createdAt: now, expiresAt: input.expiresAt };
+  await writeAudit(env, { actorType: "user", actorId: principal.email, action: "token.create", resourceType: "api_token", resourceId: id, collectionIds, metadata: { scopes: input.scopes, globalAdmin } });
+  return { id, name: input.name, token: rawToken, prefix, collectionIds, scopes: input.scopes, createdAt: now, expiresAt: input.expiresAt };
 }
 
 export async function revokeToken(env: Env, principal: AdminPrincipal, tokenId: string): Promise<void> {
@@ -81,6 +88,10 @@ export async function revokeToken(env: Env, principal: AdminPrincipal, tokenId: 
   const token = await db.query.apiTokens.findFirst({ where: eq(apiTokens.id, tokenId) });
   if (!token) return;
   const collectionIds = parseJson<string[]>(token.collectionIdsJson, []);
+  const scopes = parseJson<TokenScope[]>(token.scopesJson, []);
+  if (scopes.includes("knowledge:admin") && !principal.bootstrapAdmin) {
+    throw new ApiError(403, "bootstrap_admin_required", "只有初始管理员可以撤销最高权限 Agent Token");
+  }
   await Promise.all(collectionIds.map((id) => requireCollectionRole(env, principal, id, "admin")));
   await db.update(apiTokens).set({ revokedAt: nowIso() }).where(eq(apiTokens.id, tokenId));
   await writeAudit(env, { actorType: "user", actorId: principal.email, action: "token.revoke", resourceType: "api_token", resourceId: tokenId, collectionIds });

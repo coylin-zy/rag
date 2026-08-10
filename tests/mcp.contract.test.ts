@@ -134,6 +134,181 @@ describe("stateless MCP contract", () => {
     }, 3);
     expect(forbidden.body.result?.isError ?? Boolean(forbidden.body.error)).toBe(true);
     expect((await env.DB.prepare("SELECT count(*) AS count FROM memory_proposals WHERE collection_id = ?").bind(collection.id).first<{ count: number }>())?.count).toBe(0);
+
+    const directWrite = await rpc(token.token, "tools/call", {
+      name: "create_note",
+      arguments: {
+        collection_id: collection.id,
+        markdown: "---\ntitle: Must not exist\ntags: []\nstatus: draft\n---\n\nDenied",
+      },
+    }, 4);
+    expect(directWrite.body.result?.isError ?? Boolean(directWrite.body.error)).toBe(true);
+    expect((await env.DB.prepare("SELECT count(*) AS count FROM notes WHERE collection_id = ?").bind(collection.id).first<{ count: number }>())?.count).toBe(0);
+  });
+
+  it("lets a highest-permission Agent complete guarded knowledge CRUD with token attribution", async () => {
+    vi.spyOn(env.INDEX_QUEUE, "send").mockResolvedValue(queueSendResponse());
+    const token = await createToken([], ["knowledge:admin"]);
+
+    const tools = await rpc(token.token, "tools/list");
+    const names = tools.body.result?.tools?.map((tool) => tool.name) ?? [];
+    expect(names).toEqual(expect.arrayContaining([
+      "create_collection",
+      "update_collection",
+      "delete_collection",
+      "create_note",
+      "update_note",
+      "delete_note",
+    ]));
+    expect(names).toHaveLength(12);
+
+    const createdCollectionResponse = await rpc(token.token, "tools/call", {
+      name: "create_collection",
+      arguments: { name: "Agent managed", description: "Created through MCP" },
+    }, 2);
+    const createdCollection = createdCollectionResponse.body.result?.structuredContent?.result as {
+      id: string;
+      name: string;
+      updatedAt: string;
+    };
+    expect(createdCollection.name).toBe("Agent managed");
+    expect(await env.DB.prepare(
+      "SELECT role FROM memberships WHERE collection_id = ? AND user_email = ?",
+    ).bind(createdCollection.id, "admin@example.com").first()).toEqual({ role: "admin" });
+
+    const updatedCollectionResponse = await rpc(token.token, "tools/call", {
+      name: "update_collection",
+      arguments: {
+        collection_id: createdCollection.id,
+        expected_updated_at: createdCollection.updatedAt,
+        name: "Agent managed v2",
+        description: "Updated through MCP",
+      },
+    }, 3);
+    const updatedCollection = updatedCollectionResponse.body.result?.structuredContent?.result as {
+      name: string;
+      updatedAt: string;
+    };
+    expect(updatedCollection.name).toBe("Agent managed v2");
+    expect(updatedCollection.updatedAt > createdCollection.updatedAt).toBe(true);
+
+    const staleCollectionUpdate = await rpc(token.token, "tools/call", {
+      name: "update_collection",
+      arguments: {
+        collection_id: createdCollection.id,
+        expected_updated_at: createdCollection.updatedAt,
+        name: "Stale overwrite",
+        description: "Must fail",
+      },
+    }, 4);
+    expect(staleCollectionUpdate.body.result?.isError ?? Boolean(staleCollectionUpdate.body.error)).toBe(true);
+
+    const firstMarkdown = "---\ntitle: Agent CRUD note\ntags: [agent, crud]\nstatus: draft\n---\n\n# Agent CRUD note\n\nFirst version.";
+    const createdNoteResponse = await rpc(token.token, "tools/call", {
+      name: "create_note",
+      arguments: { collection_id: createdCollection.id, markdown: firstMarkdown },
+    }, 5);
+    const createdNote = createdNoteResponse.body.result?.structuredContent?.result as {
+      id: string;
+      title: string;
+      version: number;
+    };
+    expect(createdNote).toMatchObject({ title: "Agent CRUD note", version: 1 });
+    expect(await env.DB.prepare("SELECT created_by AS createdBy FROM notes WHERE id = ?")
+      .bind(createdNote.id)
+      .first()).toEqual({ createdBy: `mcp:${token.id}` });
+
+    const readDraft = await rpc(token.token, "tools/call", {
+      name: "read_note",
+      arguments: { note_id: createdNote.id },
+    }, 6);
+    expect(JSON.stringify(readDraft.body.result?.structuredContent?.result)).toContain("First version.");
+
+    const listedDraft = await rpc(token.token, "tools/call", {
+      name: "list_notes",
+      arguments: { collection_ids: [createdCollection.id], include_drafts: true },
+    }, 7);
+    expect(listedDraft.body.result?.structuredContent?.result).toEqual([
+      expect.objectContaining({ id: createdNote.id, status: "draft" }),
+    ]);
+
+    const mismatchedCollection = await createCollection("Mismatched resource URI");
+    const mismatchedResource = await rpc(token.token, "resources/read", {
+      uri: `kb://collections/${mismatchedCollection.id}/notes/${createdNote.id}`,
+    }, 8);
+    expect(mismatchedResource.body.error).toBeDefined();
+
+    const proposed = await rpc(token.token, "tools/call", {
+      name: "propose_memory",
+      arguments: {
+        collection_id: createdCollection.id,
+        title: "Admin token proposal",
+        body: "Highest permission also inherits memory proposals.",
+      },
+    }, 9);
+    const proposal = proposed.body.result?.structuredContent?.result as { id: string; status: string };
+    expect(proposal.status).toBe("pending");
+    await apiRequest(
+      `/api/v1/proposals/${proposal.id}/review`,
+      jsonInit("POST", { decision: "rejected", reviewNote: "CRUD cleanup" }),
+    );
+
+    const secondMarkdown = firstMarkdown
+      .replace("Agent CRUD note", "Agent CRUD note v2")
+      .replace("status: draft", "status: published")
+      .replace("First version.", "Second version.");
+    const updatedNoteResponse = await rpc(token.token, "tools/call", {
+      name: "update_note",
+      arguments: { note_id: createdNote.id, expected_version: 1, markdown: secondMarkdown },
+    }, 10);
+    const updatedNote = updatedNoteResponse.body.result?.structuredContent?.result as { title: string; version: number };
+    expect(updatedNote).toMatchObject({ title: "Agent CRUD note v2", version: 2 });
+
+    const staleNoteUpdate = await rpc(token.token, "tools/call", {
+      name: "update_note",
+      arguments: { note_id: createdNote.id, expected_version: 1, markdown: firstMarkdown },
+    }, 11);
+    expect(staleNoteUpdate.body.result?.isError ?? Boolean(staleNoteUpdate.body.error)).toBe(true);
+
+    const wrongDelete = await rpc(token.token, "tools/call", {
+      name: "delete_note",
+      arguments: { note_id: createdNote.id, expected_version: 2, confirm_title: "Wrong title" },
+    }, 12);
+    expect(wrongDelete.body.result?.isError ?? Boolean(wrongDelete.body.error)).toBe(true);
+
+    const deletedNote = await rpc(token.token, "tools/call", {
+      name: "delete_note",
+      arguments: { note_id: createdNote.id, expected_version: 2, confirm_title: "Agent CRUD note v2" },
+    }, 13);
+    expect(deletedNote.body.result?.structuredContent?.result).toEqual({ jobId: expect.any(String) });
+
+    const wrongCollectionDelete = await rpc(token.token, "tools/call", {
+      name: "delete_collection",
+      arguments: { collection_id: createdCollection.id, confirm_name: "Wrong name" },
+    }, 14);
+    expect(wrongCollectionDelete.body.result?.isError ?? Boolean(wrongCollectionDelete.body.error)).toBe(true);
+
+    const deletedCollection = await rpc(token.token, "tools/call", {
+      name: "delete_collection",
+      arguments: { collection_id: createdCollection.id, confirm_name: "Agent managed v2" },
+    }, 15);
+    expect(deletedCollection.body.result?.structuredContent?.result).toEqual({
+      deleted: true,
+      collectionId: createdCollection.id,
+    });
+
+    const audit = await env.DB.prepare(
+      "SELECT action FROM audit_logs WHERE actor_type = 'token' AND actor_id = ? ORDER BY action",
+    ).bind(token.id).all<{ action: string }>();
+    expect(audit.results?.map((row) => row.action)).toEqual(expect.arrayContaining([
+      "collection.create",
+      "collection.delete",
+      "collection.update",
+      "note.create",
+      "note.delete",
+      "note.update",
+      "proposal.create",
+    ]));
   });
 
   it("does not expose another collection and rejects expired credentials", async () => {

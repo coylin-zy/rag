@@ -8,6 +8,7 @@ import { requireCollectionRole } from "../lib/auth";
 import { writeAudit } from "../lib/audit";
 import { ApiError } from "../lib/errors";
 import { assertMarkdownSize, parseMarkdownDocument, serializeMarkdownDocument } from "../lib/markdown";
+import { isKnowledgeAdmin, requireKnowledgeRole } from "../lib/principal";
 import { nowIso, parseJson } from "../lib/utils";
 import { listCollections } from "./collections";
 import { createNote } from "./notes";
@@ -38,8 +39,14 @@ export async function submitProposal(
   principal: McpPrincipal,
   input: { collectionId: string; title: string; body: string; tags: string[]; source: string },
 ) {
-  if (!principal.scopes.includes("memory:propose")) throw new ApiError(403, "scope_required", "Token 缺少 memory:propose 权限");
-  if (!principal.collectionIds.includes(input.collectionId)) throw new ApiError(403, "collection_forbidden", "Token 无权向该知识库提交记忆");
+  if (!principal.scopes.includes("memory:propose") && !principal.scopes.includes("knowledge:admin")) {
+    throw new ApiError(403, "scope_required", "Token 缺少 memory:propose 权限");
+  }
+  if (isKnowledgeAdmin(principal)) {
+    await requireKnowledgeRole(env, principal, input.collectionId, "editor");
+  } else if (!principal.collectionIds.includes(input.collectionId)) {
+    throw new ApiError(403, "collection_forbidden", "Token 无权向该知识库提交记忆");
+  }
 
   const id = crypto.randomUUID();
   const key = proposalKey(input.collectionId, id);
