@@ -1,7 +1,7 @@
 import type { Role } from "@shared/contracts";
 import type { Env, KnowledgePrincipal, McpPrincipal } from "@worker/env";
 
-import { requireCollectionRole } from "./auth";
+import { requireCollectionRole, requireTrashedCollectionRole } from "./auth";
 import { ApiError } from "./errors";
 
 export function isMcpPrincipal(principal: KnowledgePrincipal): principal is McpPrincipal {
@@ -32,7 +32,27 @@ export async function requireKnowledgeRole(
   if (!isKnowledgeAdmin(principal)) {
     throw new ApiError(403, "scope_required", "Token 缺少 knowledge:admin 权限");
   }
-  const collection = await env.DB.prepare("SELECT id FROM collections WHERE id = ? LIMIT 1")
+  const collection = await env.DB.prepare("SELECT id FROM collections WHERE id = ? AND trashed_at IS NULL LIMIT 1")
+    .bind(collectionId)
+    .first<{ id: string }>();
+  if (!collection) throw new ApiError(404, "collection_not_found", "知识库不存在或无权访问");
+}
+
+export async function requireTrashedKnowledgeRole(
+  env: Env,
+  principal: KnowledgePrincipal,
+  collectionId: string,
+  role: Role,
+): Promise<void> {
+  if (!isMcpPrincipal(principal)) {
+    await requireTrashedCollectionRole(env, principal, collectionId, role);
+    return;
+  }
+
+  if (!isKnowledgeAdmin(principal)) {
+    throw new ApiError(403, "scope_required", "Token 缺少 knowledge:admin 权限");
+  }
+  const collection = await env.DB.prepare("SELECT id FROM collections WHERE id = ? AND trashed_at IS NOT NULL LIMIT 1")
     .bind(collectionId)
     .first<{ id: string }>();
   if (!collection) throw new ApiError(404, "collection_not_found", "知识库不存在或无权访问");

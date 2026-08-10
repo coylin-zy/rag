@@ -230,6 +230,25 @@ a { color: inherit; }
 .version-row:last-child { border-bottom: 0; }
 .version-row strong, .version-row span { display: block; }
 .version-row span { color: var(--text-muted); font-size: 12px; }
+.trash-loading { min-height: 180px; display: flex; align-items: center; justify-content: center; gap: 9px; color: var(--text-muted); }
+.trash-workspace { display: grid; gap: 18px; }
+.trash-section { overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: #fff; }
+.trash-section > header { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px; background: var(--surface-subtle); border-bottom: 1px solid var(--border); }
+.trash-section > header div, .trash-section > header span, .trash-section > header strong { display: block; }
+.trash-section > header span { color: var(--text-muted); font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.trash-section > header strong { margin-top: 2px; font-size: 14px; }
+.trash-section > header small { max-width: 50%; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trash-list { display: grid; }
+.trash-row { min-width: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.trash-row:last-child { border-bottom: 0; }
+.trash-row__icon { width: 34px; height: 34px; display: grid; place-items: center; color: #9a4742; background: #fff2f1; border: 1px solid #f0d3d0; border-radius: 8px; }
+.trash-row__icon--collection { color: var(--accent); background: var(--accent-soft); border-color: #cedcf7; }
+.trash-row__body { min-width: 0; }
+.trash-row__body strong, .trash-row__body span, .trash-row__body small { display: block; overflow-wrap: anywhere; }
+.trash-row__body strong { font-size: 13px; }
+.trash-row__body span { margin-top: 3px; color: var(--text-muted); font-size: 11px; }
+.trash-row__body small { margin-top: 3px; color: #8b6b54; font-size: 10px; }
+.trash-empty { padding: 24px 14px; color: var(--text-muted); text-align: center; font-size: 12px; }
 .member-form { display: grid; grid-template-columns: minmax(0, 1fr) 160px auto; align-items: end; gap: 10px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
 .member-table { margin-top: 12px; }
 .search-console { overflow: hidden; }
@@ -510,7 +529,7 @@ button, input, textarea, select { font-family: inherit; }
 .library-delete { width: 43px; min-height: 43px; display: grid; place-items: center; color: var(--danger); background: transparent; border: 1px solid #edcfcd; border-radius: 7px; }
 .library-delete:hover { background: #fff4f3; }
 .delete-confirmation { display: grid; gap: 16px; }
-.delete-confirmation__warning { margin: 0; padding: 12px 14px; color: #8d302d; background: #fff5f4; border: 1px solid #f0cecc; border-radius: 7px; font-size: 12px; line-height: 1.65; }
+.delete-confirmation__warning { margin: 0; padding: 12px 14px; color: #765026; background: #fff9ed; border: 1px solid #ead9b6; border-radius: 7px; font-size: 12px; line-height: 1.65; }
 .delete-confirmation__name { font-weight: 750; overflow-wrap: anywhere; }
 .knowledge-canvas { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #fff; }
 .knowledge-topbar { min-height: 116px; display: flex; align-items: center; justify-content: space-between; gap: 22px; padding: 20px 24px; border-bottom: 1px solid var(--border); }
@@ -634,6 +653,10 @@ button, input, textarea, select { font-family: inherit; }
   .knowledge-library .note-item { min-height: 82px; }
   .library-admin-actions { flex: 0 0 auto; }
   .library-members, .library-delete { min-height: 44px; }
+  .trash-workspace { gap: 14px; }
+  .trash-section > header { align-items: flex-start; }
+  .trash-row { grid-template-columns: 34px minmax(0, 1fr); }
+  .trash-row > .button { grid-column: 1 / -1; width: 100%; min-height: 42px; }
   .knowledge-canvas { height: 100%; min-height: 0; overflow: hidden; }
   .knowledge-topbar { min-height: calc(68px + env(safe-area-inset-top)); flex: 0 0 auto; align-items: center; flex-direction: row; gap: 10px; padding: max(12px, env(safe-area-inset-top)) 12px 12px max(68px, calc(env(safe-area-inset-left) + 60px)); }
   .knowledge-heading { width: auto; min-width: 0; flex: 1; }

@@ -5,7 +5,7 @@ import type { AdminPrincipal, Env } from "@worker/env";
 
 import { createDb } from "../db/client";
 import { apiTokens } from "../db/schema";
-import { requireCollectionRole } from "../lib/auth";
+import { requireAnyCollectionRole, requireCollectionRole } from "../lib/auth";
 import { writeAudit } from "../lib/audit";
 import { generateToken, sha256 } from "../lib/crypto";
 import { ApiError } from "../lib/errors";
@@ -36,7 +36,7 @@ export async function listTokens(env: Env, principal: AdminPrincipal) {
     const collectionIds = parseJson<string[]>(row.collectionIdsJson, []);
     const authorized = await Promise.all(collectionIds.map(async (id) => {
       try {
-        await requireCollectionRole(env, principal, id, "admin");
+        await requireAnyCollectionRole(env, principal, id, "admin");
         return true;
       } catch {
         return false;
@@ -92,7 +92,7 @@ export async function revokeToken(env: Env, principal: AdminPrincipal, tokenId: 
   if (scopes.includes("knowledge:admin") && !principal.bootstrapAdmin) {
     throw new ApiError(403, "bootstrap_admin_required", "只有初始管理员可以撤销最高权限 Agent Token");
   }
-  await Promise.all(collectionIds.map((id) => requireCollectionRole(env, principal, id, "admin")));
+  await Promise.all(collectionIds.map((id) => requireAnyCollectionRole(env, principal, id, "admin")));
   await db.update(apiTokens).set({ revokedAt: nowIso() }).where(eq(apiTokens.id, tokenId));
   await writeAudit(env, { actorType: "user", actorId: principal.email, action: "token.revoke", resourceType: "api_token", resourceId: tokenId, collectionIds });
 }

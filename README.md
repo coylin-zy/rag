@@ -9,7 +9,7 @@
 
 Markdown 正文和历史版本存放在私有 R2；D1 保存权限、元数据、FTS、任务、Token 哈希与审计；Vectorize 保存 1024 维余弦向量。
 
-二期五项安全增强的详细规划见 [ROADMAP_5_FEATURES.md](./ROADMAP_5_FEATURES.md)。该文档当前是待实施路线图，不表示回收站、Token 限流、版本 Diff、来源时效或批量导入导出已经上线。
+二期五项安全增强的详细规划见 [ROADMAP_5_FEATURES.md](./ROADMAP_5_FEATURES.md)。回收站与可恢复软删除已经在当前分支完成本地实现，仍未部署；Token 限流、版本 Diff、来源时效和批量导入导出尚未实现。
 
 > 上线状态（2026-07-14）：Worker 已部署到 `rag-api.coylin.com`；香港服务器上的 Vue/Nginx、Let's Encrypt HTTPS 和自动续期均已完成。`rag.coylin.com` 保持 DNS only，并使用站内登录页面保护管理后台。
 
@@ -187,14 +187,17 @@ tool_timeout_sec = 60
 - `read_note`
 - `propose_memory`
 
-`knowledge:admin` Token 还会发现以下 6 个写工具：
+`knowledge:admin` Token 还会发现以下 9 个写工具：
 
 - `create_collection`
 - `update_collection`
-- `delete_collection`
+- `trash_collection`
+- `delete_collection`（`trash_collection` 的兼容别名，不会物理删除）
+- `restore_collection`
 - `create_note`
 - `update_note`
 - `delete_note`
+- `restore_note`
 
 文档资源 URI 为：
 
@@ -202,7 +205,7 @@ tool_timeout_sec = 60
 kb://collections/{collectionId}/notes/{noteId}
 ```
 
-普通 Token 对正式知识只读；`propose_memory` 只创建待审核提案，管理员批准后才生成正式 Markdown 并进入索引。最高权限 Token 可以直接写正式知识，但集合更新必须携带最后读取的 `updated_at`，文档更新必须携带当前 `version`，删除还必须精确确认知识库名称或文档标题。所有 Agent 写入都会记录 Token 身份和不可变审计事件。
+普通 Token 对正式知识只读；`propose_memory` 只创建待审核提案，管理员批准后才生成正式 Markdown 并进入索引。最高权限 Token 可以直接写正式知识，但集合更新/回收必须携带最后读取的 `updated_at`，文档更新/回收必须携带当前 `version`，移入回收站还必须精确确认知识库名称或文档标题。回收后普通 API、搜索、MCP Tool 与 Resource 都无法读取对象；恢复使用最后观察到的 `trashed_at/deleted_at` 防止并发覆盖。所有 Agent 写入都会记录 Token 身份和不可变审计事件。
 
 ## 数据布局
 

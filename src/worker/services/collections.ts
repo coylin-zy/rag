@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 
-import type { CollectionSummary, Role } from "@shared/contracts";
+import type { CollectionSummary, Role, TrashedCollectionSummary } from "@shared/contracts";
 import type { AdminPrincipal, Env, KnowledgePrincipal } from "@worker/env";
 
 import { createDb } from "../db/client";
@@ -8,7 +8,7 @@ import { collections, memberships, notes } from "../db/schema";
 import { requireCollectionRole } from "../lib/auth";
 import { writeAudit } from "../lib/audit";
 import { ApiError } from "../lib/errors";
-import { isKnowledgeAdmin, isMcpPrincipal, principalActor, requireKnowledgeRole } from "../lib/principal";
+import { isKnowledgeAdmin, isMcpPrincipal, principalActor, requireKnowledgeRole, requireTrashedKnowledgeRole } from "../lib/principal";
 import { normalizeEmail, nowIso } from "../lib/utils";
 
 function translateLastAdminError(error: unknown): never {
@@ -22,50 +22,18 @@ function translateLastAdminError(error: unknown): never {
   throw error;
 }
 
-async function deleteR2Prefix(env: Env, prefix: string): Promise<number> {
-  let deleted = 0;
-  while (true) {
-    const page = await env.NOTES.list({ prefix, limit: 1000 });
-    const keys = page.objects.map((object) => object.key);
-    if (keys.length === 0) return deleted;
-    await env.NOTES.delete(keys);
-    deleted += keys.length;
-    if (!page.truncated) return deleted;
-  }
-}
-
-async function purgeCollectionSearchData(env: Env, collectionId: string): Promise<number> {
-  let deleted = 0;
-  while (true) {
-    const result = await env.DB.prepare(
-      "SELECT id FROM chunks WHERE collection_id = ? ORDER BY id LIMIT 100",
-    ).bind(collectionId).all<{ id: string }>();
-    const ids = result.results?.map((row) => row.id) ?? [];
-    if (ids.length === 0) return deleted;
-
-    try {
-      await env.VECTOR_INDEX.deleteByIds(ids);
-    } catch (error) {
-      if (env.ENVIRONMENT !== "development") throw error;
-    }
-
-    const placeholders = ids.map(() => "?").join(",");
-    await env.DB.batch([
-      env.DB.prepare(`DELETE FROM chunks_fts WHERE chunk_id IN (${placeholders})`).bind(...ids),
-      env.DB.prepare(`DELETE FROM chunks WHERE id IN (${placeholders})`).bind(...ids),
-    ]);
-    deleted += ids.length;
-  }
-}
-
 export async function listCollections(env: Env, principal: AdminPrincipal): Promise<CollectionSummary[]> {
   const db = createDb(env.DB);
   const membershipRows = principal.bootstrapAdmin
-    ? await db.select({ collectionId: collections.id, role: sql<Role>`'admin'` }).from(collections)
+    ? await db
+        .select({ collectionId: collections.id, role: sql<Role>`'admin'` })
+        .from(collections)
+        .where(isNull(collections.trashedAt))
     : await db
         .select({ collectionId: memberships.collectionId, role: memberships.role })
         .from(memberships)
-        .where(eq(memberships.userEmail, principal.email));
+        .innerJoin(collections, eq(collections.id, memberships.collectionId))
+        .where(and(eq(memberships.userEmail, principal.email), isNull(collections.trashedAt)));
 
   if (membershipRows.length === 0) return [];
   const roleById = new Map(membershipRows.map((row) => [row.collectionId, row.role as Role]));
@@ -80,11 +48,60 @@ export async function listCollections(env: Env, principal: AdminPrincipal): Prom
     })
     .from(collections)
     .leftJoin(notes, eq(notes.collectionId, collections.id))
-    .where(inArray(collections.id, ids))
+    .where(and(inArray(collections.id, ids), isNull(collections.trashedAt)))
     .groupBy(collections.id)
     .orderBy(desc(collections.updatedAt));
 
   return rows.map((row) => ({ ...row, noteCount: Number(row.noteCount), role: roleById.get(row.id) ?? "viewer" }));
+}
+
+export async function listTrashedCollections(env: Env, principal: AdminPrincipal): Promise<TrashedCollectionSummary[]> {
+  const db = createDb(env.DB);
+  const membershipRows = principal.bootstrapAdmin
+    ? await db
+        .select({ collectionId: collections.id, role: sql<Role>`'admin'` })
+        .from(collections)
+        .where(isNotNull(collections.trashedAt))
+    : await db
+        .select({ collectionId: memberships.collectionId, role: memberships.role })
+        .from(memberships)
+        .innerJoin(collections, eq(collections.id, memberships.collectionId))
+        .where(and(eq(memberships.userEmail, principal.email), isNotNull(collections.trashedAt)));
+  if (membershipRows.length === 0) return [];
+
+  const roleById = new Map(membershipRows.map((row) => [row.collectionId, row.role as Role]));
+  const rows = await db
+    .select({
+      id: collections.id,
+      name: collections.name,
+      description: collections.description,
+      updatedAt: collections.updatedAt,
+      trashedAt: collections.trashedAt,
+      trashedBy: collections.trashedBy,
+      trashReason: collections.trashReason,
+      purgeAfter: collections.purgeAfter,
+      noteCount: sql<number>`sum(case when ${notes.status} != 'deleted' then 1 else 0 end)`,
+      deletedNoteCount: sql<number>`sum(case when ${notes.status} = 'deleted' then 1 else 0 end)`,
+    })
+    .from(collections)
+    .leftJoin(notes, eq(notes.collectionId, collections.id))
+    .where(and(inArray(collections.id, [...roleById.keys()]), isNotNull(collections.trashedAt)))
+    .groupBy(collections.id)
+    .orderBy(desc(collections.trashedAt));
+
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    updatedAt: row.updatedAt,
+    role: roleById.get(row.id) ?? "viewer",
+    noteCount: Number(row.noteCount),
+    deletedNoteCount: Number(row.deletedNoteCount),
+    trashedAt: row.trashedAt ?? "",
+    trashedBy: row.trashedBy ?? "",
+    trashReason: row.trashReason ?? "",
+    purgeAfter: row.purgeAfter ?? "",
+  }));
 }
 
 export async function createCollection(
@@ -122,7 +139,7 @@ export async function updateCollection(
     : new Date(new Date(expectedUpdatedAt).getTime() + 1).toISOString();
   const result = await env.DB.prepare(`
     UPDATE collections SET name = ?, description = ?, updated_at = ?
-    WHERE id = ? AND updated_at = ?
+    WHERE id = ? AND updated_at = ? AND trashed_at IS NULL
   `).bind(input.name, input.description, now, collectionId, expectedUpdatedAt).run();
   if (Number(result.meta.changes) !== 1) {
     throw new ApiError(409, "collection_version_conflict", "知识库已被其他操作更新，请重新读取后再修改");
@@ -141,89 +158,91 @@ export async function updateCollection(
     SELECT c.id, c.name, c.description, c.updated_at AS updatedAt,
            sum(case when n.status != 'deleted' then 1 else 0 end) AS noteCount
     FROM collections c LEFT JOIN notes n ON n.collection_id = c.id
-    WHERE c.id = ? GROUP BY c.id
+    WHERE c.id = ? AND c.trashed_at IS NULL GROUP BY c.id
   `).bind(collectionId).first<{ id: string; name: string; description: string; updatedAt: string; noteCount: number }>();
   if (!row) throw new ApiError(404, "collection_not_found", "知识库不存在或无权访问");
   return { ...row, noteCount: Number(row.noteCount), role: "admin" };
 }
 
-export async function deleteCollection(
+export async function trashCollection(
   env: Env,
   principal: KnowledgePrincipal,
   collectionId: string,
-  confirmationName?: string,
+  input: { expectedUpdatedAt: string; confirmationName: string; reason?: string },
 ) {
   await requireKnowledgeRole(env, principal, collectionId, "admin");
   const collection = await env.DB.prepare(
-    "SELECT id, name FROM collections WHERE id = ? LIMIT 1",
-  ).bind(collectionId).first<{ id: string; name: string }>();
+    "SELECT id, name, updated_at AS updatedAt FROM collections WHERE id = ? AND trashed_at IS NULL LIMIT 1",
+  ).bind(collectionId).first<{ id: string; name: string; updatedAt: string }>();
   if (!collection) throw new ApiError(404, "collection_not_found", "知识库不存在或无权访问");
-  if (isMcpPrincipal(principal) && confirmationName !== collection.name) {
-    throw new ApiError(409, "collection_confirmation_mismatch", "删除知识库必须提供完全一致的名称确认");
+  if (input.confirmationName !== collection.name) {
+    throw new ApiError(409, "collection_confirmation_mismatch", "移入回收站必须提供完全一致的知识库名称");
+  }
+  if (input.expectedUpdatedAt !== collection.updatedAt) {
+    throw new ApiError(409, "collection_version_conflict", "知识库已被其他操作更新，请重新读取后再移入回收站");
   }
 
-  const now = nowIso();
-  const usage = await env.DB.prepare(`
-    SELECT
-      (SELECT count(*) FROM notes WHERE collection_id = ? AND status != 'deleted') AS activeNoteCount,
-      (SELECT count(*) FROM notes WHERE collection_id = ? AND status = 'deleted') AS deletedNoteCount,
-      (SELECT count(*) FROM memory_proposals WHERE collection_id = ? AND status = 'pending') AS pendingProposalCount,
-      (
-        SELECT count(DISTINCT token.id)
-        FROM api_tokens token, json_each(token.collection_ids_json) scope
-        WHERE scope.value = ?
-          AND token.revoked_at IS NULL
-          AND (token.expires_at IS NULL OR token.expires_at > ?)
-      ) AS activeTokenCount
-  `).bind(collectionId, collectionId, collectionId, collectionId, now).first<{
-    activeNoteCount: number;
-    deletedNoteCount: number;
-    pendingProposalCount: number;
-    activeTokenCount: number;
-  }>();
-
-  if (!usage) throw new ApiError(500, "collection_usage_unavailable", "暂时无法检查知识库使用状态");
-  if (Number(usage.activeNoteCount) > 0) {
-    throw new ApiError(409, "collection_not_empty", "请先删除知识库中的全部文档");
-  }
-  if (Number(usage.activeTokenCount) > 0) {
-    throw new ApiError(409, "collection_has_active_tokens", "请先撤销仍在使用此知识库的 MCP Token");
-  }
-  if (Number(usage.pendingProposalCount) > 0) {
-    throw new ApiError(409, "collection_has_pending_proposals", "请先处理此知识库的待审核记忆提案");
-  }
-
-  const deletedSearchChunks = await purgeCollectionSearchData(env, collectionId);
-  let deletedObjects = 0;
-  for (const prefix of [`notes/${collectionId}/`, `versions/${collectionId}/`, `proposals/${collectionId}/`]) {
-    deletedObjects += await deleteR2Prefix(env, prefix);
-  }
-
-  const auditId = crypto.randomUUID();
+  const trashedAt = nowIso();
+  const purgeAfter = new Date(new Date(trashedAt).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
   const actor = principalActor(principal);
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM collections WHERE id = ?").bind(collectionId),
-    env.DB.prepare(`
-      INSERT INTO audit_logs (
-        id, actor_type, actor_id, action, resource_type, resource_id,
-        collection_ids_json, metadata_json, created_at
-      ) VALUES (?, ?, ?, 'collection.delete', 'collection', ?, ?, ?, ?)
-    `).bind(
-      auditId,
-      actor.actorType,
-      actor.actorId,
-      collectionId,
-      JSON.stringify([collectionId]),
-      JSON.stringify({
-        deletedNoteHistory: Number(usage.deletedNoteCount),
-        deletedObjects,
-        deletedSearchChunks,
-      }),
-      now,
-    ),
-  ]);
+  const result = await env.DB.prepare(`
+    UPDATE collections
+    SET trashed_at = ?, trashed_by = ?, trash_reason = ?, purge_after = ?, updated_at = ?
+    WHERE id = ? AND updated_at = ? AND trashed_at IS NULL
+  `).bind(
+    trashedAt,
+    actor.authorId,
+    input.reason?.trim() ?? "",
+    purgeAfter,
+    trashedAt,
+    collectionId,
+    input.expectedUpdatedAt,
+  ).run();
+  if (Number(result.meta.changes) !== 1) {
+    throw new ApiError(409, "collection_version_conflict", "知识库在移入回收站前已被其他操作更新");
+  }
+  await writeAudit(env, {
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    action: "collection.trash",
+    resourceType: "collection",
+    resourceId: collectionId,
+    collectionIds: [collectionId],
+    metadata: { expectedUpdatedAt: input.expectedUpdatedAt, trashedAt, purgeAfter, reason: input.reason?.trim() ?? "" },
+  });
+  return { trashed: true, collectionId, trashedAt, purgeAfter };
+}
 
-  return { deleted: true, collectionId };
+/** Compatibility alias: collection deletion is now always recoverable. */
+export const deleteCollection = trashCollection;
+
+export async function restoreCollection(
+  env: Env,
+  principal: KnowledgePrincipal,
+  collectionId: string,
+  expectedTrashedAt: string,
+) {
+  await requireTrashedKnowledgeRole(env, principal, collectionId, "admin");
+  const restoredAt = nowIso();
+  const actor = principalActor(principal);
+  const result = await env.DB.prepare(`
+    UPDATE collections
+    SET trashed_at = NULL, trashed_by = NULL, trash_reason = NULL, purge_after = NULL, updated_at = ?
+    WHERE id = ? AND trashed_at = ?
+  `).bind(restoredAt, collectionId, expectedTrashedAt).run();
+  if (Number(result.meta.changes) !== 1) {
+    throw new ApiError(409, "collection_restore_conflict", "知识库回收状态已变化，请刷新回收站后重试");
+  }
+  await writeAudit(env, {
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    action: "collection.restore",
+    resourceType: "collection",
+    resourceId: collectionId,
+    collectionIds: [collectionId],
+    metadata: { expectedTrashedAt, restoredAt },
+  });
+  return { restored: true, collectionId, restoredAt };
 }
 
 export async function listMembers(env: Env, principal: AdminPrincipal, collectionId: string) {

@@ -155,12 +155,15 @@ describe("stateless MCP contract", () => {
     expect(names).toEqual(expect.arrayContaining([
       "create_collection",
       "update_collection",
+      "trash_collection",
       "delete_collection",
+      "restore_collection",
       "create_note",
       "update_note",
       "delete_note",
+      "restore_note",
     ]));
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(15);
 
     const createdCollectionResponse = await rpc(token.token, "tools/call", {
       name: "create_collection",
@@ -280,32 +283,66 @@ describe("stateless MCP contract", () => {
       name: "delete_note",
       arguments: { note_id: createdNote.id, expected_version: 2, confirm_title: "Agent CRUD note v2" },
     }, 13);
-    expect(deletedNote.body.result?.structuredContent?.result).toEqual({ jobId: expect.any(String) });
+    const deletedNoteResult = deletedNote.body.result?.structuredContent?.result as { jobId: string; deletedAt: string };
+    expect(deletedNoteResult).toMatchObject({ jobId: expect.any(String), deletedAt: expect.any(String) });
 
     const wrongCollectionDelete = await rpc(token.token, "tools/call", {
       name: "delete_collection",
-      arguments: { collection_id: createdCollection.id, confirm_name: "Wrong name" },
+      arguments: {
+        collection_id: createdCollection.id,
+        expected_updated_at: updatedCollection.updatedAt,
+        confirm_name: "Wrong name",
+      },
     }, 14);
     expect(wrongCollectionDelete.body.result?.isError ?? Boolean(wrongCollectionDelete.body.error)).toBe(true);
 
     const deletedCollection = await rpc(token.token, "tools/call", {
       name: "delete_collection",
-      arguments: { collection_id: createdCollection.id, confirm_name: "Agent managed v2" },
+      arguments: {
+        collection_id: createdCollection.id,
+        expected_updated_at: updatedCollection.updatedAt,
+        confirm_name: "Agent managed v2",
+      },
     }, 15);
-    expect(deletedCollection.body.result?.structuredContent?.result).toEqual({
-      deleted: true,
+    const deletedCollectionResult = deletedCollection.body.result?.structuredContent?.result as { trashed: boolean; trashedAt: string };
+    expect(deletedCollectionResult).toMatchObject({
+      trashed: true,
       collectionId: createdCollection.id,
     });
+
+    const hiddenCollections = await rpc(token.token, "tools/call", { name: "list_collections", arguments: {} }, 16);
+    expect(hiddenCollections.body.result?.structuredContent?.result).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: createdCollection.id }),
+    ]));
+    const hiddenNote = await rpc(token.token, "tools/call", { name: "read_note", arguments: { note_id: createdNote.id } }, 17);
+    expect(hiddenNote.body.result?.isError ?? Boolean(hiddenNote.body.error)).toBe(true);
+
+    const restoredCollection = await rpc(token.token, "tools/call", {
+      name: "restore_collection",
+      arguments: { collection_id: createdCollection.id, expected_trashed_at: deletedCollectionResult.trashedAt },
+    }, 18);
+    expect(restoredCollection.body.result?.structuredContent?.result).toMatchObject({ restored: true, collectionId: createdCollection.id });
+    const restoredNote = await rpc(token.token, "tools/call", {
+      name: "restore_note",
+      arguments: {
+        note_id: createdNote.id,
+        expected_version: 2,
+        expected_deleted_at: deletedNoteResult.deletedAt,
+      },
+    }, 19);
+    expect(restoredNote.body.result?.structuredContent?.result).toMatchObject({ id: createdNote.id, status: "published", version: 2 });
 
     const audit = await env.DB.prepare(
       "SELECT action FROM audit_logs WHERE actor_type = 'token' AND actor_id = ? ORDER BY action",
     ).bind(token.id).all<{ action: string }>();
     expect(audit.results?.map((row) => row.action)).toEqual(expect.arrayContaining([
       "collection.create",
-      "collection.delete",
+      "collection.restore",
+      "collection.trash",
       "collection.update",
       "note.create",
       "note.delete",
+      "note.restore_deleted",
       "note.update",
       "proposal.create",
     ]));
@@ -338,8 +375,25 @@ describe("stateless MCP contract", () => {
     expect(search.body.result?.isError ?? Boolean(search.body.error)).toBe(true);
     expect(JSON.stringify(search.body)).not.toContain("DO-NOT-LEAK-773");
 
+    const trashAllowed = await apiRequest<{ trashedAt: string }>(
+      `/api/v1/collections/${allowed.id}/trash`,
+      jsonInit("POST", {
+        expectedUpdatedAt: allowed.updatedAt,
+        confirmName: allowed.name,
+        reason: "ordinary token isolation test",
+      }),
+    );
+    expect(trashAllowed.response.status).toBe(200);
+    if (!("data" in trashAllowed.body)) throw new Error("Collection trash failed");
+    const hiddenAllowed = await rpc(token.token, "tools/call", { name: "list_collections", arguments: {} }, 4);
+    expect(hiddenAllowed.body.result?.structuredContent?.result).toEqual([]);
+    await apiRequest(
+      `/api/v1/collections/${allowed.id}/restore`,
+      jsonInit("POST", { expectedTrashedAt: trashAllowed.body.data.trashedAt }),
+    );
+
     await apiRequest(`/api/v1/tokens/${token.id}`, { method: "DELETE" });
-    const revoked = await mcpRequest(token.token, "tools/list", {}, 4);
+    const revoked = await mcpRequest(token.token, "tools/list", {}, 5);
     expect(revoked.status).toBe(401);
     expect(await revoked.text()).not.toContain(token.token);
 
@@ -347,7 +401,7 @@ describe("stateless MCP contract", () => {
     await env.DB.prepare("UPDATE api_tokens SET expires_at = ? WHERE id = ?")
       .bind("2000-01-01T00:00:00.000Z", expiringToken.id)
       .run();
-    const expired = await mcpRequest(expiringToken.token, "tools/list", {}, 5);
+    const expired = await mcpRequest(expiringToken.token, "tools/list", {}, 6);
     expect(expired.status).toBe(401);
     expect(await expired.text()).not.toContain(expiringToken.token);
   });

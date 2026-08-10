@@ -7,7 +7,11 @@ export const collections = sqliteTable("collections", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   createdBy: text("created_by").notNull(),
-});
+  trashedAt: text("trashed_at"),
+  trashedBy: text("trashed_by"),
+  trashReason: text("trash_reason"),
+  purgeAfter: text("purge_after"),
+}, (table) => [index("idx_collections_trashed_updated").on(table.trashedAt, table.updatedAt)]);
 
 export const memberships = sqliteTable(
   "memberships",
@@ -36,10 +40,14 @@ export const notes = sqliteTable(
     createdBy: text("created_by").notNull(),
     updatedBy: text("updated_by").notNull(),
     deletedAt: text("deleted_at"),
+    deletedFromStatus: text("deleted_from_status", { enum: ["draft", "published"] }),
+    deletedBy: text("deleted_by"),
+    deleteReason: text("delete_reason"),
   },
   (table) => [
     index("idx_notes_collection_updated").on(table.collectionId, table.updatedAt),
     index("idx_notes_status").on(table.status),
+    index("idx_notes_collection_deleted").on(table.collectionId, table.deletedAt),
   ],
 );
 

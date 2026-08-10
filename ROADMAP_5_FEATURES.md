@@ -1,6 +1,6 @@
 # Knowledge Core 五项增强实施计划
 
-> 状态：规划完成，尚未开始功能实现<br>
+> 状态：规划完成；功能一已在当前分支本地实现并进入验收，尚未部署<br>
 > 规划基线：`ca26f69 feat: add trusted agent knowledge admin token`<br>
 > 目标场景：个人 Markdown AI 大脑，Codex 等 Agent 通过 MCP 使用，Cloudflare Workers + D1 + R2 + Vectorize + Queues 承载后端
 

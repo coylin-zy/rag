@@ -279,7 +279,7 @@ Worker 后端没有“给服务器分配多少内存”的配置，持久数据�
 
 - [x] 知识库、成员、编辑预览、版本恢复和索引任务页面。
 - [x] 检索调试、提案审核和 MCP Token 页面。
-- [x] 普通 Token 的 6 个 MCP Tools、最高权限 Token 的 6 个 CRUD Tools，以及 1 个 Resource Template。
+- [x] 普通 Token 的 6 个 MCP Tools、最高权限 Token 的 9 个 CRUD/恢复 Tools（含 1 个兼容别名），以及 1 个 Resource Template。
 - [x] Agent 记忆提案进入人工审核流程。
 - [x] 增加只能由 bootstrap 管理员签发的 `knowledge:admin`，并为集合/文档更新、删除和审计设置安全边界。
 
@@ -291,7 +291,7 @@ Worker 后端没有“给服务器分配多少内存”的配置，持久数据�
 - [x] 将单任务重试严格限制到调用者可管理的知识库。
 - [x] 加固并发版本写入、旧索引任务、Queue 重投和提案并发批准。
 - [x] 增加 frontmatter、切块、哈希、权限、RRF、检索、Queue 和 MCP 合约测试。
-- [x] 建立当前测试基线：7 个测试文件、31 个测试通过，`pnpm typecheck` 通过。
+- [x] 建立当前测试基线：Worker 9 个测试文件、41 项通过，Web 1 个测试文件、15 项通过，两套 TypeScript 检查通过。
 - [x] 执行最新本地 D1 migrations，并用 Wrangler 跑通 D1、R2、Queue、API 和 MCP。
 - [x] 增加 Playwright 关键流程测试。
 - [x] 检查桌面和 375 px 移动端交互、页面级横向溢出与按钮命中区域。
@@ -326,6 +326,7 @@ Worker 后端没有“给服务器分配多少内存”的配置，持久数据�
 
 五项已选增强的依赖、迁移、接口和验收细节以 [ROADMAP_5_FEATURES.md](./ROADMAP_5_FEATURES.md) 为准；实现顺序不是下面清单的展示顺序。
 
+- [x] 回收站、知识库/文档可恢复软删除与 MCP 恢复工具（当前分支本地完成，尚未部署）。
 - [ ] Markdown ZIP/Git 导入导出与 Obsidian 工作流。
 - [ ] 附件、图片和文档间双向链接。
 - [ ] 搜索评测集、命中反馈和模型版本对比。

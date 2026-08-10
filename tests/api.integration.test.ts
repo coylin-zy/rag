@@ -8,7 +8,7 @@ import { apiRequest, createCollection, createNote, jsonInit, queueSendResponse, 
 afterEach(() => vi.restoreAllMocks());
 
 describe("management API, D1 and R2", () => {
-  it("applies every migration including FTS and scoped audit columns", async () => {
+  it("applies every migration including FTS, scoped audit and recycle-bin columns", async () => {
     const tables = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')").all<{ name: string }>();
     expect(tables.results?.map((row) => row.name)).toEqual(expect.arrayContaining([
       "collections",
@@ -19,6 +19,19 @@ describe("management API, D1 and R2", () => {
     ]));
     const columns = await env.DB.prepare("PRAGMA table_info(audit_logs)").all<{ name: string }>();
     expect(columns.results?.map((row) => row.name)).toContain("collection_ids_json");
+    const collectionColumns = await env.DB.prepare("PRAGMA table_info(collections)").all<{ name: string }>();
+    expect(collectionColumns.results?.map((row) => row.name)).toEqual(expect.arrayContaining([
+      "trashed_at",
+      "trashed_by",
+      "trash_reason",
+      "purge_after",
+    ]));
+    const noteColumns = await env.DB.prepare("PRAGMA table_info(notes)").all<{ name: string }>();
+    expect(noteColumns.results?.map((row) => row.name)).toEqual(expect.arrayContaining([
+      "deleted_from_status",
+      "deleted_by",
+      "delete_reason",
+    ]));
   });
 
   it("stores canonical Markdown versions in R2 and enforces optimistic locking", async () => {
@@ -219,39 +232,45 @@ describe("management API, D1 and R2", () => {
     expect(bootstrapRevoke.response.status).toBe(200);
   });
 
-  it("deletes only unused collections with administrator permission and records the purge", async () => {
+  it("moves notes and non-empty collections to a recoverable trash without deleting D1 or R2", async () => {
     vi.spyOn(env.INDEX_QUEUE, "send").mockResolvedValue(queueSendResponse());
-    const missingDelete = await apiRequest(
-      "/api/v1/collections/00000000-0000-4000-8000-000000000000",
-      { method: "DELETE" },
+    const missingTrash = await apiRequest(
+      "/api/v1/collections/00000000-0000-4000-8000-000000000000/trash",
+      jsonInit("POST", {
+        expectedUpdatedAt: "2026-08-10T00:00:00.000Z",
+        confirmName: "Missing",
+        reason: "test",
+      }),
     );
-    expect(missingDelete.response.status).toBe(404);
-    expect("error" in missingDelete.body && missingDelete.body.error.code).toBe("collection_not_found");
+    expect(missingTrash.response.status).toBe(404);
+    expect("error" in missingTrash.body && missingTrash.body.error.code).toBe("collection_not_found");
 
-    const collection = await createCollection("Disposable knowledge");
+    const collection = await createCollection("Recoverable knowledge");
     await apiRequest(
       `/api/v1/collections/${collection.id}/members`,
       jsonInit("PUT", { email: "viewer-delete@example.com", role: "viewer" }),
     );
 
-    const viewerDelete = await apiRequest(
-      `/api/v1/collections/${collection.id}`,
-      { method: "DELETE" },
+    const trashInput = {
+      expectedUpdatedAt: collection.updatedAt,
+      confirmName: collection.name,
+      reason: "integration test",
+    };
+    const viewerTrash = await apiRequest(
+      `/api/v1/collections/${collection.id}/trash`,
+      jsonInit("POST", trashInput),
       "viewer-delete@example.com",
     );
-    expect(viewerDelete.response.status).toBe(403);
+    expect(viewerTrash.response.status).toBe(403);
 
-    const outsiderDelete = await apiRequest(
-      `/api/v1/collections/${collection.id}`,
-      { method: "DELETE" },
+    const outsiderTrash = await apiRequest(
+      `/api/v1/collections/${collection.id}/trash`,
+      jsonInit("POST", trashInput),
       "outsider-delete@example.com",
     );
-    expect(outsiderDelete.response.status).toBe(404);
+    expect(outsiderTrash.response.status).toBe(404);
 
-    const created = await createNote(collection.id, { title: "Temporary note", body: "Delete me safely" });
-    const nonEmptyDelete = await apiRequest(`/api/v1/collections/${collection.id}`, { method: "DELETE" });
-    expect(nonEmptyDelete.response.status).toBe(409);
-    expect("error" in nonEmptyDelete.body && nonEmptyDelete.body.error.code).toBe("collection_not_empty");
+    const created = await createNote(collection.id, { title: "Temporary note", body: "Recover me safely" });
 
     const token = await apiRequest<{ id: string }>(
       "/api/v1/tokens",
@@ -265,29 +284,65 @@ describe("management API, D1 and R2", () => {
     expect(token.response.status).toBe(201);
     if (!("data" in token.body)) throw new Error("Token creation failed");
 
-    const noteDelete = await apiRequest(`/api/v1/notes/${created.note.id}`, { method: "DELETE" });
-    expect(noteDelete.response.status).toBe(200);
-    const tokenBlockedDelete = await apiRequest(`/api/v1/collections/${collection.id}`, { method: "DELETE" });
-    expect(tokenBlockedDelete.response.status).toBe(409);
-    expect("error" in tokenBlockedDelete.body && tokenBlockedDelete.body.error.code).toBe("collection_has_active_tokens");
-
-    const revoke = await apiRequest(`/api/v1/tokens/${token.body.data.id}`, { method: "DELETE" });
-    expect(revoke.response.status).toBe(200);
-    const deleted = await apiRequest<{ deleted: boolean; collectionId: string }>(
-      `/api/v1/collections/${collection.id}`,
-      { method: "DELETE" },
+    const noteDelete = await apiRequest<{ deletedAt: string }>(
+      `/api/v1/notes/${created.note.id}`,
+      jsonInit("DELETE", { reason: "superseded" }, { "if-match": `"${created.note.version}"` }),
     );
-    expect(deleted.response.status).toBe(200);
-    expect("data" in deleted.body && deleted.body.data).toEqual({ deleted: true, collectionId: collection.id });
+    expect(noteDelete.response.status).toBe(200);
+    if (!("data" in noteDelete.body)) throw new Error("Note trash failed");
+    const deletedAt = noteDelete.body.data.deletedAt;
+    expect((await apiRequest(`/api/v1/notes/${created.note.id}`)).response.status).toBe(404);
+    const noteTrash = await apiRequest<Array<{ id: string; deletedFromStatus: string; deletedAt: string }>>(
+      `/api/v1/trash/notes?collectionId=${collection.id}`,
+    );
+    expect("data" in noteTrash.body && noteTrash.body.data).toEqual([
+      expect.objectContaining({ id: created.note.id, deletedFromStatus: "published", deletedAt }),
+    ]);
 
-    expect(await env.DB.prepare("SELECT id FROM collections WHERE id = ?").bind(collection.id).first()).toBeNull();
-    expect(await env.NOTES.get(`notes/${collection.id}/${created.note.id}/current.md`)).toBeNull();
-    expect(await env.NOTES.get(`versions/${collection.id}/${created.note.id}/1.md`)).toBeNull();
+    const trashed = await apiRequest<{ trashed: boolean; collectionId: string; trashedAt: string }>(
+      `/api/v1/collections/${collection.id}/trash`,
+      jsonInit("POST", trashInput),
+    );
+    expect(trashed.response.status).toBe(200);
+    if (!("data" in trashed.body)) throw new Error("Collection trash failed");
+    expect(trashed.body.data).toMatchObject({ trashed: true, collectionId: collection.id });
+
+    const activeCollections = await apiRequest<Array<{ id: string }>>("/api/v1/collections");
+    expect("data" in activeCollections.body && activeCollections.body.data.some((item) => item.id === collection.id)).toBe(false);
+    const trashCollections = await apiRequest<Array<{ id: string; trashedAt: string; deletedNoteCount: number }>>("/api/v1/trash/collections");
+    expect("data" in trashCollections.body && trashCollections.body.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: collection.id, trashedAt: trashed.body.data.trashedAt, deletedNoteCount: 1 }),
+    ]));
+
+    expect(await env.DB.prepare("SELECT id FROM collections WHERE id = ?").bind(collection.id).first()).toEqual({ id: collection.id });
+    expect(await env.DB.prepare("SELECT id FROM api_tokens WHERE id = ?").bind(token.body.data.id).first()).toEqual({ id: token.body.data.id });
+    expect(await env.DB.prepare("SELECT role FROM memberships WHERE collection_id = ? AND user_email = ?")
+      .bind(collection.id, "viewer-delete@example.com").first()).toEqual({ role: "viewer" });
+    expect(await env.NOTES.get(`notes/${collection.id}/${created.note.id}/current.md`)).not.toBeNull();
+    expect(await env.NOTES.get(`versions/${collection.id}/${created.note.id}/1.md`)).not.toBeNull();
+
+    const restoredCollection = await apiRequest(
+      `/api/v1/collections/${collection.id}/restore`,
+      jsonInit("POST", { expectedTrashedAt: trashed.body.data.trashedAt }),
+    );
+    expect(restoredCollection.response.status).toBe(200);
+    const restoredNote = await apiRequest(
+      `/api/v1/notes/${created.note.id}/restore-deleted`,
+      jsonInit("POST", { expectedVersion: created.note.version, expectedDeletedAt: deletedAt }),
+    );
+    expect(restoredNote.response.status).toBe(200);
+    expect(await env.DB.prepare("SELECT status, deleted_at AS deletedAt FROM notes WHERE id = ?")
+      .bind(created.note.id).first()).toEqual({ status: "published", deletedAt: null });
+
     const audit = await env.DB.prepare(
-      "SELECT action, metadata_json AS metadataJson FROM audit_logs WHERE resource_id = ? AND action = 'collection.delete'",
-    ).bind(collection.id).first<{ action: string; metadataJson: string }>();
-    expect(audit?.action).toBe("collection.delete");
-    expect(JSON.parse(audit?.metadataJson ?? "{}")).toMatchObject({ deletedNoteHistory: 1, deletedObjects: 2 });
+      "SELECT action FROM audit_logs WHERE resource_id IN (?, ?) ORDER BY action",
+    ).bind(collection.id, created.note.id).all<{ action: string }>();
+    expect(audit.results?.map((row) => row.action)).toEqual(expect.arrayContaining([
+      "collection.restore",
+      "collection.trash",
+      "note.delete",
+      "note.restore_deleted",
+    ]));
   });
 
   it("returns only knowledge-base-scoped audit events to administrators", async () => {

@@ -300,7 +300,7 @@ describe("redesigned workspace shell", () => {
     wrapper.unmount();
   });
 
-  it("requires an exact name before deleting a collection", async () => {
+  it("requires an exact name before moving a collection to trash", async () => {
     const router = createTestRouter();
     await router.push("/knowledge/collection-delete");
     await router.isReady();
@@ -315,8 +315,8 @@ describe("redesigned workspace shell", () => {
       updatedAt: "2026-08-03T08:00:00.000Z",
     }];
     vi.mocked(api).mockImplementation(async (path: string, init: RequestInit = {}) => {
-      if (path === "/api/v1/collections/collection-delete" && init.method === "DELETE") {
-        return { deleted: true, collectionId: "collection-delete" };
+      if (path === "/api/v1/collections/collection-delete/trash" && init.method === "POST") {
+        return { trashed: true, collectionId: "collection-delete" };
       }
       return [];
     });
@@ -332,9 +332,98 @@ describe("redesigned workspace shell", () => {
     await wrapper.get('[data-testid="confirm-delete-collection"]').trigger("click");
     await flushPromises();
 
-    expect(api).toHaveBeenCalledWith("/api/v1/collections/collection-delete", { method: "DELETE" });
+    expect(api).toHaveBeenCalledWith("/api/v1/collections/collection-delete/trash", {
+      method: "POST",
+      body: JSON.stringify({
+        expectedUpdatedAt: "2026-08-03T08:00:00.000Z",
+        confirmName: "Disposable knowledge",
+        reason: "网页管理端移入回收站",
+      }),
+    });
     expect(store.collections).toEqual([]);
     expect(router.currentRoute.value.fullPath).toBe("/knowledge");
+    wrapper.unmount();
+  });
+
+  it("lists recoverable notes and collections and sends optimistic restore guards", async () => {
+    const router = createTestRouter();
+    await router.push("/knowledge/collection-active");
+    await router.isReady();
+    const store = useAppStore();
+    store.initialized = true;
+    const activeCollection = {
+      id: "collection-active",
+      name: "Active knowledge",
+      description: "",
+      role: "admin" as const,
+      noteCount: 0,
+      updatedAt: "2026-08-10T08:00:00.000Z",
+    };
+    store.collections = [activeCollection];
+    const deletedAt = "2026-08-10T08:30:00.000Z";
+    const trashedAt = "2026-08-10T09:00:00.000Z";
+    vi.mocked(api).mockImplementation(async (path: string) => {
+      if (path === "/api/v1/collections/collection-active/notes") return [];
+      if (path === "/api/v1/trash/notes?collectionId=collection-active") {
+        return [{
+          id: "note-deleted",
+          collectionId: "collection-active",
+          title: "Recoverable note",
+          tags: [],
+          status: "deleted",
+          version: 3,
+          indexedVersion: null,
+          updatedAt: deletedAt,
+          updatedBy: "admin@example.com",
+          deletedFromStatus: "published",
+          deletedAt,
+          deletedBy: "admin@example.com",
+          deleteReason: "cleanup",
+        }];
+      }
+      if (path === "/api/v1/trash/collections") {
+        return [{
+          id: "collection-trashed",
+          name: "Archived project",
+          description: "",
+          role: "admin",
+          noteCount: 4,
+          deletedNoteCount: 1,
+          updatedAt: trashedAt,
+          trashedAt,
+          trashedBy: "admin@example.com",
+          trashReason: "paused",
+          purgeAfter: "2026-09-09T09:00:00.000Z",
+        }];
+      }
+      if (path === "/api/v1/collections") return [activeCollection];
+      if (path.includes("/restore")) return { restored: true };
+      return [];
+    });
+
+    const wrapper = mount(KnowledgeView, { global: { plugins: [router], stubs: { Teleport: true } } });
+    await flushPromises();
+    await wrapper.get('[data-testid="open-trash"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Recoverable note");
+    expect(wrapper.text()).toContain("Archived project");
+
+    const restoreButtons = wrapper.findAll(".trash-row .button");
+    await restoreButtons[0].trigger("click");
+    await flushPromises();
+    expect(api).toHaveBeenCalledWith("/api/v1/notes/note-deleted/restore-deleted", {
+      method: "POST",
+      body: JSON.stringify({ expectedVersion: 3, expectedDeletedAt: deletedAt }),
+    });
+
+    const refreshedButtons = wrapper.findAll(".trash-row .button");
+    await refreshedButtons[1].trigger("click");
+    await flushPromises();
+    expect(api).toHaveBeenCalledWith("/api/v1/collections/collection-trashed/restore", {
+      method: "POST",
+      body: JSON.stringify({ expectedTrashedAt: trashedAt }),
+    });
+    expect(router.currentRoute.value.fullPath).toBe("/knowledge/collection-trashed");
     wrapper.unmount();
   });
 

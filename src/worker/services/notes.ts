@@ -1,11 +1,11 @@
 import { and, desc, eq, gt, inArray, ne } from "drizzle-orm";
 
-import type { NoteSummary } from "@shared/contracts";
+import type { NoteSummary, TrashedNoteSummary } from "@shared/contracts";
 import type { AdminPrincipal, Env, KnowledgePrincipal, McpPrincipal } from "@worker/env";
 
 import { createDb } from "../db/client";
 import { noteVersions, notes } from "../db/schema";
-import { requireCollectionRole } from "../lib/auth";
+import { requireAnyCollectionRole, requireCollectionRole } from "../lib/auth";
 import { writeAudit } from "../lib/audit";
 import { sha256 } from "../lib/crypto";
 import { ApiError } from "../lib/errors";
@@ -33,6 +33,15 @@ async function getNoteRow(env: Env, noteId: string) {
   const note = await db.query.notes.findFirst({ where: eq(notes.id, noteId) });
   if (!note) throw new ApiError(404, "note_not_found", "文档不存在");
   return note;
+}
+
+async function filterActiveCollectionIds(env: Env, collectionIds: string[]): Promise<string[]> {
+  if (collectionIds.length === 0) return [];
+  const placeholders = collectionIds.map(() => "?").join(",");
+  const result = await env.DB.prepare(
+    `SELECT id FROM collections WHERE id IN (${placeholders}) AND trashed_at IS NULL`,
+  ).bind(...collectionIds).all<{ id: string }>();
+  return result.results?.map((row) => row.id) ?? [];
 }
 
 async function getVersionMarkdown(env: Env, noteId: string, version: number): Promise<string> {
@@ -96,14 +105,15 @@ export async function listNotesForCollections(
   collectionIds: string[],
   options: { tags?: string[]; updatedAfter?: string; limit?: number; includeDrafts?: boolean } = {},
 ): Promise<NoteSummary[]> {
-  if (collectionIds.length === 0) return [];
+  const activeCollectionIds = await filterActiveCollectionIds(env, collectionIds);
+  if (activeCollectionIds.length === 0) return [];
   const limit = Math.min(options.limit ?? 100, 200);
   const db = createDb(env.DB);
   const rows = await db
     .select()
     .from(notes)
     .where(and(
-      inArray(notes.collectionId, collectionIds),
+      inArray(notes.collectionId, activeCollectionIds),
       options.includeDrafts ? ne(notes.status, "deleted") : eq(notes.status, "published"),
       options.updatedAfter ? gt(notes.updatedAt, options.updatedAfter) : undefined,
     ))
@@ -118,13 +128,15 @@ export async function listNotesForCollections(
 export async function readNoteForAdmin(env: Env, principal: AdminPrincipal, noteId: string) {
   const note = await getNoteRow(env, noteId);
   await requireCollectionRole(env, principal, note.collectionId, "viewer");
+  if (note.status === "deleted") throw new ApiError(404, "note_not_found", "文档不存在或无权访问");
   const markdown = await getVersionMarkdown(env, note.id, note.version);
   return { ...toSummary(note), markdown };
 }
 
 export async function readNoteForCollections(env: Env, collectionIds: string[], noteId: string) {
   const note = await getNoteRow(env, noteId);
-  if (!collectionIds.includes(note.collectionId) || note.status !== "published") {
+  const activeCollectionIds = await filterActiveCollectionIds(env, collectionIds);
+  if (!activeCollectionIds.includes(note.collectionId) || note.status !== "published") {
     throw new ApiError(404, "note_not_found", "文档不存在或无权访问");
   }
   const markdown = await getVersionMarkdown(env, note.id, note.version);
@@ -264,39 +276,122 @@ export async function deleteNote(
   env: Env,
   principal: KnowledgePrincipal,
   noteId: string,
-  safety?: { expectedVersion: number; confirmationTitle: string },
-): Promise<string> {
+  safety: { expectedVersion: number; confirmationTitle?: string; reason?: string },
+) {
   const db = createDb(env.DB);
   const note = await getNoteRow(env, noteId);
   await requireKnowledgeRole(env, principal, note.collectionId, "editor");
+  if (note.status === "deleted") throw new ApiError(409, "note_already_deleted", "文档已经在回收站中");
+  if (safety.expectedVersion !== note.version) {
+    throw new ApiError(409, "version_conflict", `文档已更新到版本 ${note.version}`);
+  }
   if (isMcpPrincipal(principal)) {
-    if (!safety || safety.expectedVersion !== note.version) {
-      throw new ApiError(409, "version_conflict", `文档已更新到版本 ${note.version}`);
-    }
     if (safety.confirmationTitle !== note.title) {
-      throw new ApiError(409, "note_confirmation_mismatch", "删除文档必须提供完全一致的标题确认");
+      throw new ApiError(409, "note_confirmation_mismatch", "移入回收站必须提供完全一致的文档标题");
     }
   }
   const now = nowIso();
   const actor = principalActor(principal);
   const result = await db.update(notes)
-    .set({ status: "deleted", deletedAt: now, updatedAt: now, updatedBy: actor.authorId })
+    .set({
+      status: "deleted",
+      deletedAt: now,
+      deletedFromStatus: note.status,
+      deletedBy: actor.authorId,
+      deleteReason: safety.reason?.trim() ?? "",
+      updatedAt: now,
+      updatedBy: actor.authorId,
+    })
     .where(and(
       eq(notes.id, noteId),
       ne(notes.status, "deleted"),
-      isMcpPrincipal(principal) ? eq(notes.version, safety?.expectedVersion ?? -1) : undefined,
+      eq(notes.version, safety.expectedVersion),
     ));
   if (Number(result.meta.changes) !== 1) {
     throw new ApiError(409, "version_conflict", "文档在删除前已被其他操作更新");
   }
   const jobId = await enqueueJob(env, { type: "delete", noteId });
-  await writeAudit(env, { actorType: actor.actorType, actorId: actor.actorId, action: "note.delete", resourceType: "note", resourceId: noteId, collectionIds: [note.collectionId], metadata: { version: note.version } });
-  return jobId;
+  await writeAudit(env, {
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    action: "note.delete",
+    resourceType: "note",
+    resourceId: noteId,
+    collectionIds: [note.collectionId],
+    metadata: { version: note.version, deletedAt: now, deletedFromStatus: note.status, reason: safety.reason?.trim() ?? "" },
+  });
+  return { jobId, noteId, version: note.version, deletedAt: now };
+}
+
+export async function listTrashedNotes(
+  env: Env,
+  principal: AdminPrincipal,
+  collectionId: string,
+): Promise<TrashedNoteSummary[]> {
+  await requireAnyCollectionRole(env, principal, collectionId, "viewer");
+  const db = createDb(env.DB);
+  const rows = await db
+    .select()
+    .from(notes)
+    .where(and(eq(notes.collectionId, collectionId), eq(notes.status, "deleted")))
+    .orderBy(desc(notes.deletedAt));
+  return rows.map((row) => ({
+    ...toSummary(row),
+    status: "deleted",
+    deletedFromStatus: row.deletedFromStatus ?? "draft",
+    deletedAt: row.deletedAt ?? row.updatedAt,
+    deletedBy: row.deletedBy ?? row.updatedBy,
+    deleteReason: row.deleteReason ?? "",
+  }));
+}
+
+export async function restoreDeletedNote(
+  env: Env,
+  principal: KnowledgePrincipal,
+  noteId: string,
+  safety: { expectedVersion: number; expectedDeletedAt: string },
+) {
+  const note = await getNoteRow(env, noteId);
+  await requireKnowledgeRole(env, principal, note.collectionId, "editor");
+  if (note.status !== "deleted" || !note.deletedAt) {
+    throw new ApiError(409, "note_not_deleted", "文档不在回收站中");
+  }
+  if (note.version !== safety.expectedVersion || note.deletedAt !== safety.expectedDeletedAt) {
+    throw new ApiError(409, "note_restore_conflict", "文档回收状态已变化，请刷新回收站后重试");
+  }
+
+  const restoredStatus = note.deletedFromStatus ?? "draft";
+  const restoredAt = nowIso();
+  const actor = principalActor(principal);
+  const result = await env.DB.prepare(`
+    UPDATE notes
+    SET status = ?, deleted_at = NULL, deleted_from_status = NULL, deleted_by = NULL,
+        delete_reason = NULL, updated_at = ?, updated_by = ?
+    WHERE id = ? AND status = 'deleted' AND version = ? AND deleted_at = ?
+  `).bind(restoredStatus, restoredAt, actor.authorId, noteId, safety.expectedVersion, safety.expectedDeletedAt).run();
+  if (Number(result.meta.changes) !== 1) {
+    throw new ApiError(409, "note_restore_conflict", "文档在恢复前已被其他操作更改");
+  }
+
+  const jobId = restoredStatus === "published"
+    ? await enqueueJob(env, { type: "index", noteId, version: note.version })
+    : null;
+  await writeAudit(env, {
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    action: "note.restore_deleted",
+    resourceType: "note",
+    resourceId: noteId,
+    collectionIds: [note.collectionId],
+    metadata: { version: note.version, expectedDeletedAt: safety.expectedDeletedAt, restoredStatus, restoredAt, jobId },
+  });
+  return { ...toSummary(await getNoteRow(env, noteId)), jobId, restoredAt };
 }
 
 export async function listVersions(env: Env, principal: AdminPrincipal, noteId: string) {
   const note = await getNoteRow(env, noteId);
   await requireCollectionRole(env, principal, note.collectionId, "viewer");
+  if (note.status === "deleted") throw new ApiError(404, "note_not_found", "文档不存在或无权访问");
   const db = createDb(env.DB);
   return db.select().from(noteVersions).where(eq(noteVersions.noteId, noteId)).orderBy(desc(noteVersions.version));
 }

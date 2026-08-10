@@ -72,7 +72,10 @@ describe("index Queue pipeline", () => {
     );
     expect("data" in semantic.body && semantic.body.data[0]?.noteId).toBe(created.note.id);
 
-    const deletion = await apiRequest<{ jobId: string }>(`/api/v1/notes/${created.note.id}`, { method: "DELETE" });
+    const deletion = await apiRequest<{ jobId: string }>(
+      `/api/v1/notes/${created.note.id}`,
+      jsonInit("DELETE", { reason: "index cleanup" }, { "if-match": `"${created.note.version}"` }),
+    );
     expect(deletion.response.status).toBe(200);
     const deleteMessage = sent.find((message) => message.type === "delete");
     if (!deleteMessage) throw new Error("Delete message was not queued");

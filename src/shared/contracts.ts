@@ -92,6 +92,14 @@ export interface CollectionSummary {
   updatedAt: string;
 }
 
+export interface TrashedCollectionSummary extends CollectionSummary {
+  deletedNoteCount: number;
+  trashedAt: string;
+  trashedBy: string;
+  trashReason: string;
+  purgeAfter: string;
+}
+
 export interface NoteSummary {
   id: string;
   collectionId: string;
@@ -102,6 +110,14 @@ export interface NoteSummary {
   indexedVersion: number | null;
   updatedAt: string;
   updatedBy: string;
+}
+
+export interface TrashedNoteSummary extends NoteSummary {
+  status: "deleted";
+  deletedFromStatus: "draft" | "published";
+  deletedAt: string;
+  deletedBy: string;
+  deleteReason: string;
 }
 
 export interface SearchResult {

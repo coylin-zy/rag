@@ -26,15 +26,26 @@ import { writeAudit } from "./lib/audit";
 import { ApiError, errorResponse } from "./lib/errors";
 import { handleMcpRequest } from "./mcp";
 import { listAuditLogs } from "./services/audit";
-import { createCollection, deleteCollection, listCollections, listMembers, removeMember, upsertMember } from "./services/collections";
+import {
+  createCollection,
+  listCollections,
+  listMembers,
+  listTrashedCollections,
+  removeMember,
+  restoreCollection,
+  trashCollection,
+  upsertMember,
+} from "./services/collections";
 import { enqueueJob, listJobsForAdmin, retryJobForAdmin } from "./services/jobs";
 import {
   createNote,
   deleteNote,
   listNotes,
+  listTrashedNotes,
   listVersions,
   readNoteForAdmin,
   reindexNote,
+  restoreDeletedNote,
   restoreVersion,
   updateNote,
 } from "./services/notes";
@@ -92,6 +103,19 @@ const loginSchema = z.object({
   password: z.string().min(1).max(1024),
 });
 
+const trashCollectionSchema = z.object({
+  expectedUpdatedAt: z.string().datetime(),
+  confirmName: z.string().min(1).max(80),
+  reason: z.string().trim().max(500).default(""),
+});
+
+const restoreCollectionSchema = z.object({ expectedTrashedAt: z.string().datetime() });
+const deleteNoteSchema = z.object({ reason: z.string().trim().max(500).default("") });
+const restoreDeletedNoteSchema = z.object({
+  expectedVersion: z.number().int().positive(),
+  expectedDeletedAt: z.string().datetime(),
+});
+
 app.post("/api/v1/auth/login", async (c) => {
   const input = loginSchema.parse(await c.req.json());
   if (!(c.env.ENVIRONMENT === "development" && c.env.DEV_AUTH_BYPASS === "true")) {
@@ -139,14 +163,37 @@ app.get("/api/v1/audit", async (c) => {
   return ok(c, await listAuditLogs(c.env, c.get("principal"), query));
 });
 
+app.get("/api/v1/trash/collections", async (c) => ok(c, await listTrashedCollections(c.env, c.get("principal"))));
+app.get("/api/v1/trash/notes", async (c) => {
+  const { collectionId } = z.object({ collectionId: z.string().uuid() }).parse(c.req.query());
+  return ok(c, await listTrashedNotes(c.env, c.get("principal"), collectionId));
+});
+
 app.get("/api/v1/collections", async (c) => ok(c, await listCollections(c.env, c.get("principal"))));
 app.post("/api/v1/collections", async (c) => {
   const input = createCollectionSchema.parse(await c.req.json());
   return ok(c, await createCollection(c.env, c.get("principal"), input), 201);
 });
-app.delete("/api/v1/collections/:collectionId", async (c) => (
-  ok(c, await deleteCollection(c.env, c.get("principal"), c.req.param("collectionId")))
-));
+app.post("/api/v1/collections/:collectionId/trash", async (c) => {
+  const input = trashCollectionSchema.parse(await c.req.json());
+  return ok(c, await trashCollection(c.env, c.get("principal"), c.req.param("collectionId"), {
+    expectedUpdatedAt: input.expectedUpdatedAt,
+    confirmationName: input.confirmName,
+    reason: input.reason,
+  }));
+});
+app.post("/api/v1/collections/:collectionId/restore", async (c) => {
+  const input = restoreCollectionSchema.parse(await c.req.json());
+  return ok(c, await restoreCollection(c.env, c.get("principal"), c.req.param("collectionId"), input.expectedTrashedAt));
+});
+app.delete("/api/v1/collections/:collectionId", async (c) => {
+  const input = trashCollectionSchema.parse(await c.req.json().catch(() => ({})));
+  return ok(c, await trashCollection(c.env, c.get("principal"), c.req.param("collectionId"), {
+    expectedUpdatedAt: input.expectedUpdatedAt,
+    confirmationName: input.confirmName,
+    reason: input.reason,
+  }));
+});
 app.get("/api/v1/collections/:collectionId/members", async (c) => ok(c, await listMembers(c.env, c.get("principal"), c.req.param("collectionId"))));
 app.put("/api/v1/collections/:collectionId/members", async (c) => {
   const input = z.object({ email: z.string().email(), role: roleSchema }).parse(await c.req.json());
@@ -173,7 +220,17 @@ app.put("/api/v1/notes/:noteId", async (c) => {
   c.header("etag", `"${result.version}"`);
   return ok(c, result);
 });
-app.delete("/api/v1/notes/:noteId", async (c) => ok(c, { jobId: await deleteNote(c.env, c.get("principal"), c.req.param("noteId")) }));
+app.delete("/api/v1/notes/:noteId", async (c) => {
+  const input = deleteNoteSchema.parse(await c.req.json().catch(() => ({})));
+  return ok(c, await deleteNote(c.env, c.get("principal"), c.req.param("noteId"), {
+    expectedVersion: expectedVersion(c.req.header("if-match")),
+    reason: input.reason,
+  }));
+});
+app.post("/api/v1/notes/:noteId/restore-deleted", async (c) => {
+  const input = restoreDeletedNoteSchema.parse(await c.req.json());
+  return ok(c, await restoreDeletedNote(c.env, c.get("principal"), c.req.param("noteId"), input));
+});
 app.get("/api/v1/notes/:noteId/versions", async (c) => ok(c, await listVersions(c.env, c.get("principal"), c.req.param("noteId"))));
 app.post("/api/v1/notes/:noteId/restore", async (c) => {
   const { version } = z.object({ version: z.number().int().positive() }).parse(await c.req.json());

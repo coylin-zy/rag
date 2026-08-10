@@ -7,13 +7,14 @@ import type { Env, McpPrincipal } from "./env";
 import { ApiError } from "./lib/errors";
 import { proposalSchema, searchSchema } from "@shared/contracts";
 import { isKnowledgeAdmin } from "./lib/principal";
-import { createCollection, deleteCollection, updateCollection } from "./services/collections";
+import { createCollection, restoreCollection, trashCollection, updateCollection } from "./services/collections";
 import {
   createNote,
   deleteNote,
   listNotesForCollections,
   readNoteForCollections,
   readNoteForMcpAdmin,
+  restoreDeletedNote,
   updateNote,
 } from "./services/notes";
 import { submitProposal } from "./services/proposals";
@@ -33,8 +34,17 @@ function requireScope(principal: McpPrincipal, scope: McpPrincipal["scopes"][num
 }
 
 async function collectionIdsForToken(env: Env, principal: McpPrincipal): Promise<string[]> {
-  if (!isKnowledgeAdmin(principal)) return principal.collectionIds;
-  const result = await env.DB.prepare("SELECT id FROM collections ORDER BY name").all<{ id: string }>();
+  if (isKnowledgeAdmin(principal)) {
+    const result = await env.DB.prepare(
+      "SELECT id FROM collections WHERE trashed_at IS NULL ORDER BY name",
+    ).all<{ id: string }>();
+    return result.results?.map((row) => row.id) ?? [];
+  }
+  if (principal.collectionIds.length === 0) return [];
+  const placeholders = principal.collectionIds.map(() => "?").join(",");
+  const result = await env.DB.prepare(
+    `SELECT id FROM collections WHERE id IN (${placeholders}) AND trashed_at IS NULL ORDER BY name`,
+  ).bind(...principal.collectionIds).all<{ id: string }>();
   return result.results?.map((row) => row.id) ?? [];
 }
 
@@ -43,7 +53,7 @@ async function collectionsForToken(env: Env, principal: McpPrincipal) {
   if (collectionIds.length === 0) return [];
   const placeholders = collectionIds.map(() => "?").join(",");
   const result = await env.DB.prepare(
-    `SELECT id, name, description, updated_at FROM collections WHERE id IN (${placeholders}) ORDER BY name`,
+    `SELECT id, name, description, updated_at FROM collections WHERE id IN (${placeholders}) AND trashed_at IS NULL ORDER BY name`,
   ).bind(...collectionIds).all();
   return result.results ?? [];
 }
@@ -89,7 +99,7 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
     async ({ note_id }) => {
       requireScope(principal, "knowledge:read");
       if (isKnowledgeAdmin(principal)) return toolResult(await readNoteForMcpAdmin(env, principal, note_id));
-      return toolResult(await readNoteForCollections(env, principal.collectionIds, note_id));
+      return toolResult(await readNoteForCollections(env, await collectionIdsForToken(env, principal), note_id));
     },
   );
 
@@ -200,17 +210,64 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
     );
 
     server.registerTool(
-      "delete_collection",
+      "trash_collection",
       {
-        title: "Delete knowledge base",
-        description: "Permanently delete an empty knowledge base after exact-name confirmation. Active scoped tokens and pending proposals still block deletion.",
+        title: "Move knowledge base to trash",
+        description: "Hide a knowledge base from normal API and MCP access while preserving all Markdown, versions, members, tokens and proposals for recovery.",
         inputSchema: {
           collection_id: z.string().uuid(),
+          expected_updated_at: z.string().datetime(),
           confirm_name: z.string().min(1).max(80),
+          reason: z.string().trim().max(500).optional(),
         },
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       },
-      async ({ collection_id, confirm_name }) => toolResult(await deleteCollection(env, principal, collection_id, confirm_name)),
+      async ({ collection_id, expected_updated_at, confirm_name, reason }) => toolResult(await trashCollection(
+        env,
+        principal,
+        collection_id,
+        { expectedUpdatedAt: expected_updated_at, confirmationName: confirm_name, reason },
+      )),
+    );
+
+    server.registerTool(
+      "delete_collection",
+      {
+        title: "Move knowledge base to trash (compatibility alias)",
+        description: "Compatibility alias for trash_collection. This never physically deletes D1, R2, versions, members, tokens or proposals.",
+        inputSchema: {
+          collection_id: z.string().uuid(),
+          expected_updated_at: z.string().datetime(),
+          confirm_name: z.string().min(1).max(80),
+          reason: z.string().trim().max(500).optional(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      },
+      async ({ collection_id, expected_updated_at, confirm_name, reason }) => toolResult(await trashCollection(
+        env,
+        principal,
+        collection_id,
+        { expectedUpdatedAt: expected_updated_at, confirmationName: confirm_name, reason },
+      )),
+    );
+
+    server.registerTool(
+      "restore_collection",
+      {
+        title: "Restore knowledge base from trash",
+        description: "Restore a trashed knowledge base using the last observed trashed_at value.",
+        inputSchema: {
+          collection_id: z.string().uuid(),
+          expected_trashed_at: z.string().datetime(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      },
+      async ({ collection_id, expected_trashed_at }) => toolResult(await restoreCollection(
+        env,
+        principal,
+        collection_id,
+        expected_trashed_at,
+      )),
     );
 
     server.registerTool(
@@ -251,12 +308,33 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
           note_id: z.string().uuid(),
           expected_version: z.number().int().positive(),
           confirm_title: z.string().min(1).max(160),
+          reason: z.string().trim().max(500).optional(),
         },
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       },
-      async ({ note_id, expected_version, confirm_title }) => toolResult({
-        jobId: await deleteNote(env, principal, note_id, { expectedVersion: expected_version, confirmationTitle: confirm_title }),
+      async ({ note_id, expected_version, confirm_title, reason }) => toolResult({
+        ...await deleteNote(env, principal, note_id, { expectedVersion: expected_version, confirmationTitle: confirm_title, reason }),
       }),
+    );
+
+    server.registerTool(
+      "restore_note",
+      {
+        title: "Restore Markdown note from trash",
+        description: "Restore a soft-deleted note using its last observed version and deleted_at value.",
+        inputSchema: {
+          note_id: z.string().uuid(),
+          expected_version: z.number().int().positive(),
+          expected_deleted_at: z.string().datetime(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      },
+      async ({ note_id, expected_version, expected_deleted_at }) => toolResult(await restoreDeletedNote(
+        env,
+        principal,
+        note_id,
+        { expectedVersion: expected_version, expectedDeletedAt: expected_deleted_at },
+      )),
     );
   }
 

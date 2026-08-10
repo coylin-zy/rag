@@ -46,6 +46,11 @@ export async function submitProposal(
     await requireKnowledgeRole(env, principal, input.collectionId, "editor");
   } else if (!principal.collectionIds.includes(input.collectionId)) {
     throw new ApiError(403, "collection_forbidden", "Token 无权向该知识库提交记忆");
+  } else {
+    const collection = await env.DB.prepare(
+      "SELECT id FROM collections WHERE id = ? AND trashed_at IS NULL LIMIT 1",
+    ).bind(input.collectionId).first<{ id: string }>();
+    if (!collection) throw new ApiError(404, "collection_not_found", "知识库不存在或无权访问");
   }
 
   const id = crypto.randomUUID();

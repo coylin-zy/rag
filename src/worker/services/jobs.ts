@@ -34,7 +34,6 @@ export async function listJobs(env: Env, limit = 100) {
 }
 
 export async function listJobsForAdmin(env: Env, principal: AdminPrincipal, limit = 100) {
-  if (principal.bootstrapAdmin) return listJobs(env, limit);
   const accessible = (await listCollections(env, principal)).filter((collection) => collection.role !== "viewer");
   if (accessible.length === 0) return [];
   const placeholders = accessible.map(() => "?").join(",");

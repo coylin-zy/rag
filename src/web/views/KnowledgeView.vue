@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  ArchiveRestore,
   BookOpenText,
   Clock3,
   Eye,
@@ -24,7 +25,7 @@ import { marked } from "marked";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
-import type { CollectionSummary, NoteSummary, Role } from "@shared/contracts";
+import type { CollectionSummary, NoteSummary, Role, TrashedCollectionSummary, TrashedNoteSummary } from "@shared/contracts";
 import { stripFrontmatter } from "@shared/markdown";
 import ModalDialog from "@web/components/ModalDialog.vue";
 import StatusBadge from "@web/components/StatusBadge.vue";
@@ -68,9 +69,14 @@ const versions = ref<VersionRow[]>([]);
 const showMembersModal = ref(false);
 const members = ref<MemberRow[]>([]);
 const memberForm = ref<{ email: string; role: Role }>({ email: "", role: "viewer" });
-const showDeleteCollectionModal = ref(false);
-const deleteCollectionConfirmation = ref("");
-const deletingCollection = ref(false);
+const showTrashCollectionModal = ref(false);
+const trashCollectionConfirmation = ref("");
+const trashingCollection = ref(false);
+const showTrashModal = ref(false);
+const trashedCollections = ref<TrashedCollectionSummary[]>([]);
+const trashedNotes = ref<TrashedNoteSummary[]>([]);
+const loadingTrash = ref(false);
+const restoringTrashId = ref("");
 
 const selectedCollection = computed(() => appStore.collections.find((item) => item.id === selectedCollectionId.value) ?? null);
 const canEdit = computed(() => selectedCollection.value?.role === "admin" || selectedCollection.value?.role === "editor");
@@ -211,15 +217,19 @@ async function createNewNote() {
   }
 }
 
-async function deleteCurrentNote() {
-  if (!selectedNote.value || !window.confirm(`确定删除“${selectedNote.value.title}”吗？历史版本将保留。`)) return;
+async function trashCurrentNote() {
+  if (!selectedNote.value || !window.confirm(`将“${selectedNote.value.title}”移入回收站吗？正文和历史版本都会保留。`)) return;
   try {
-    await api(`/api/v1/notes/${selectedNote.value.id}`, { method: "DELETE" });
+    await api(`/api/v1/notes/${selectedNote.value.id}`, {
+      method: "DELETE",
+      headers: { "if-match": `"${selectedNote.value.version}"` },
+      ...jsonBody({ reason: "网页管理端移入回收站" }),
+    });
     selectedNote.value = null;
     editorValue.value = "";
     await Promise.all([loadNotes(selectedCollectionId.value), appStore.loadCollections()]);
     await router.push(`/knowledge/${selectedCollectionId.value}`);
-    toast.show("文档已移出检索索引", "success");
+    toast.show("文档已移入回收站，可随时恢复", "success");
   } catch (error) {
     toast.show(error instanceof Error ? error.message : "删除失败", "error");
   }
@@ -280,25 +290,32 @@ async function removeMember(email: string) {
   }
 }
 
-function openDeleteCollection() {
-  deleteCollectionConfirmation.value = "";
-  showDeleteCollectionModal.value = true;
+function openTrashCollection() {
+  trashCollectionConfirmation.value = "";
+  showTrashCollectionModal.value = true;
 }
 
-function closeDeleteCollection() {
-  if (deletingCollection.value) return;
-  showDeleteCollectionModal.value = false;
-  deleteCollectionConfirmation.value = "";
+function closeTrashCollection() {
+  if (trashingCollection.value) return;
+  showTrashCollectionModal.value = false;
+  trashCollectionConfirmation.value = "";
 }
 
-async function deleteSelectedCollection() {
+async function trashSelectedCollection() {
   const collection = selectedCollection.value;
-  if (!collection || deleteCollectionConfirmation.value !== collection.name || deletingCollection.value) return;
-  deletingCollection.value = true;
+  if (!collection || trashCollectionConfirmation.value !== collection.name || trashingCollection.value) return;
+  trashingCollection.value = true;
   try {
-    await api<{ deleted: boolean }>(`/api/v1/collections/${collection.id}`, { method: "DELETE" });
-    showDeleteCollectionModal.value = false;
-    deleteCollectionConfirmation.value = "";
+    await api<{ trashed: boolean }>(`/api/v1/collections/${collection.id}/trash`, {
+      method: "POST",
+      ...jsonBody({
+        expectedUpdatedAt: collection.updatedAt,
+        confirmName: collection.name,
+        reason: "网页管理端移入回收站",
+      }),
+    });
+    showTrashCollectionModal.value = false;
+    trashCollectionConfirmation.value = "";
     selectedCollectionId.value = "";
     selectedNote.value = null;
     editorValue.value = "";
@@ -306,11 +323,73 @@ async function deleteSelectedCollection() {
     await appStore.loadCollections();
     const nextCollectionId = appStore.collections[0]?.id;
     await router.replace(nextCollectionId ? `/knowledge/${nextCollectionId}` : "/knowledge");
-    toast.show("知识库已永久删除", "success");
+    toast.show("知识库已移入回收站，成员与全部 Markdown 均已保留", "success");
   } catch (error) {
-    toast.show(error instanceof Error ? error.message : "知识库删除失败", "error");
+    toast.show(error instanceof Error ? error.message : "移入回收站失败", "error");
   } finally {
-    deletingCollection.value = false;
+    trashingCollection.value = false;
+  }
+}
+
+async function loadTrash() {
+  loadingTrash.value = true;
+  trashedCollections.value = [];
+  trashedNotes.value = [];
+  try {
+    const noteRequest = selectedCollectionId.value
+      ? api<TrashedNoteSummary[]>(`/api/v1/trash/notes?collectionId=${encodeURIComponent(selectedCollectionId.value)}`)
+      : Promise.resolve([]);
+    [trashedCollections.value, trashedNotes.value] = await Promise.all([
+      api<TrashedCollectionSummary[]>("/api/v1/trash/collections"),
+      noteRequest,
+    ]);
+  } finally {
+    loadingTrash.value = false;
+  }
+}
+
+async function openTrash() {
+  showTrashModal.value = true;
+  try {
+    await loadTrash();
+  } catch (error) {
+    toast.show(error instanceof Error ? error.message : "回收站加载失败", "error");
+  }
+}
+
+async function restoreTrashedNote(note: TrashedNoteSummary) {
+  if (restoringTrashId.value) return;
+  restoringTrashId.value = note.id;
+  try {
+    await api(`/api/v1/notes/${note.id}/restore-deleted`, {
+      method: "POST",
+      ...jsonBody({ expectedVersion: note.version, expectedDeletedAt: note.deletedAt }),
+    });
+    await Promise.all([loadTrash(), loadNotes(note.collectionId), appStore.loadCollections()]);
+    toast.show(`“${note.title}”已恢复`, "success");
+  } catch (error) {
+    toast.show(error instanceof Error ? error.message : "文档恢复失败", "error");
+  } finally {
+    restoringTrashId.value = "";
+  }
+}
+
+async function restoreTrashedCollection(collection: TrashedCollectionSummary) {
+  if (restoringTrashId.value) return;
+  restoringTrashId.value = collection.id;
+  try {
+    await api(`/api/v1/collections/${collection.id}/restore`, {
+      method: "POST",
+      ...jsonBody({ expectedTrashedAt: collection.trashedAt }),
+    });
+    await Promise.all([appStore.loadCollections(), loadTrash()]);
+    showTrashModal.value = false;
+    await router.push(`/knowledge/${collection.id}`);
+    toast.show(`知识库“${collection.name}”已恢复`, "success");
+  } catch (error) {
+    toast.show(error instanceof Error ? error.message : "知识库恢复失败", "error");
+  } finally {
+    restoringTrashId.value = "";
   }
 }
 
@@ -380,6 +459,7 @@ onBeforeUnmount(() => {
       <header class="library-header">
         <div><span>工作空间</span><strong>知识库</strong></div>
         <div class="library-header__actions">
+          <button class="icon-button icon-button--small" type="button" title="回收站" aria-label="打开回收站" data-testid="open-trash" @click="openTrash"><ArchiveRestore :size="17" /></button>
           <button class="icon-button icon-button--small" type="button" title="新建知识库" aria-label="新建知识库" data-testid="create-collection-sidebar" @click="showCollectionModal = true"><FolderPlus :size="17" /></button>
           <button class="icon-button icon-button--small" type="button" title="新建文档" aria-label="新建文档" data-testid="create-note-sidebar" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" /></button>
           <button class="icon-button drawer-close" type="button" aria-label="关闭文档面板" @click="closeMobilePanels()"><X :size="20" /></button>
@@ -429,7 +509,7 @@ onBeforeUnmount(() => {
 
       <div v-if="selectedCollection && canAdmin" class="library-admin-actions">
         <button class="library-members" type="button" @click="openMembers"><Users :size="16" />管理知识库成员</button>
-        <button class="library-delete" type="button" title="删除知识库" aria-label="删除知识库" data-testid="delete-collection-trigger" @click="openDeleteCollection"><Trash2 :size="17" /></button>
+        <button class="library-delete" type="button" title="移入回收站" aria-label="将知识库移入回收站" data-testid="delete-collection-trigger" @click="openTrashCollection"><Trash2 :size="17" /></button>
       </div>
     </aside>
 
@@ -476,7 +556,7 @@ onBeforeUnmount(() => {
           <div class="editor-actions">
             <button class="icon-button" type="button" title="版本记录" aria-label="版本记录" @click="openVersions"><History :size="18" /></button>
             <button class="icon-button" type="button" title="重新索引" aria-label="重新索引" @click="reindexCurrentNote"><RefreshCw :size="18" /></button>
-            <button class="icon-button danger-icon" type="button" title="删除文档" aria-label="删除文档" @click="deleteCurrentNote"><Trash2 :size="18" /></button>
+            <button class="icon-button danger-icon" type="button" title="移入回收站" aria-label="将文档移入回收站" @click="trashCurrentNote"><Trash2 :size="18" /></button>
           </div>
         </div>
         <div id="knowledge-editor-workspace" class="editor-workspace" :class="`editor-workspace--${editorMode}`">
@@ -595,21 +675,51 @@ onBeforeUnmount(() => {
     <template #footer><button class="button button--secondary" type="button" @click="showNoteModal = false">取消</button><button class="button button--primary" type="submit" form="note-form" :disabled="creatingNote"><span v-if="creatingNote" class="spinner" />创建并编辑</button></template>
   </ModalDialog>
 
-  <ModalDialog v-if="showDeleteCollectionModal && selectedCollection" title="删除知识库" :description="selectedCollection.name" @close="closeDeleteCollection">
+  <ModalDialog v-if="showTrashCollectionModal && selectedCollection" title="将知识库移入回收站" :description="selectedCollection.name" @close="closeTrashCollection">
     <div class="delete-confirmation">
-      <p class="delete-confirmation__warning">此操作不可撤销。只有不含当前文档、未被有效 Token 使用且没有待审核提案的知识库才能删除；已删除文档的历史版本也会被永久清理。</p>
+      <p class="delete-confirmation__warning">知识库会立即从正常网页、搜索和 MCP 中隐藏，但成员、Token 范围、提案、Markdown 正文与全部历史版本都会保留。恢复后原权限继续有效。</p>
       <div class="field">
-        <label for="delete-collection-confirmation">输入知识库名称以确认</label>
+        <label for="delete-collection-confirmation">输入知识库名称以确认移入回收站</label>
         <div class="delete-confirmation__name">{{ selectedCollection.name }}</div>
-        <input id="delete-collection-confirmation" v-model="deleteCollectionConfirmation" class="input" autocomplete="off" data-testid="delete-collection-confirmation" autofocus />
+        <input id="delete-collection-confirmation" v-model="trashCollectionConfirmation" class="input" autocomplete="off" data-testid="delete-collection-confirmation" autofocus />
       </div>
     </div>
     <template #footer>
-      <button class="button button--secondary" type="button" :disabled="deletingCollection" @click="closeDeleteCollection">取消</button>
-      <button class="button button--danger" type="button" data-testid="confirm-delete-collection" :disabled="deletingCollection || deleteCollectionConfirmation !== selectedCollection.name" @click="deleteSelectedCollection">
-        <span v-if="deletingCollection" class="spinner" />永久删除
+      <button class="button button--secondary" type="button" :disabled="trashingCollection" @click="closeTrashCollection">取消</button>
+      <button class="button button--danger" type="button" data-testid="confirm-delete-collection" :disabled="trashingCollection || trashCollectionConfirmation !== selectedCollection.name" @click="trashSelectedCollection">
+        <span v-if="trashingCollection" class="spinner" />移入回收站
       </button>
     </template>
+  </ModalDialog>
+
+  <ModalDialog v-if="showTrashModal" title="回收站" description="恢复不会覆盖或删除任何历史版本。" wide @close="showTrashModal = false">
+    <div v-if="loadingTrash" class="trash-loading"><LoaderCircle :size="18" class="spin-icon" />正在读取回收站</div>
+    <div v-else class="trash-workspace">
+      <section class="trash-section">
+        <header><div><span>当前知识库</span><strong>已删除文档</strong></div><small>{{ selectedCollection?.name || '尚未选择知识库' }}</small></header>
+        <div v-if="!selectedCollection" class="trash-empty">先选择一个活动知识库，再查看其中可恢复的文档。</div>
+        <div v-else-if="trashedNotes.length === 0" class="trash-empty">这个知识库没有已删除文档。</div>
+        <div v-else class="trash-list">
+          <article v-for="note in trashedNotes" :key="note.id" class="trash-row">
+            <div class="trash-row__icon"><Trash2 :size="17" /></div>
+            <div class="trash-row__body"><strong>{{ note.title }}</strong><span>原状态 {{ note.deletedFromStatus }} · v{{ note.version }} · {{ formatDate(note.deletedAt) }}</span><small>{{ note.deletedBy }}<template v-if="note.deleteReason"> · {{ note.deleteReason }}</template></small></div>
+            <button class="button button--secondary" type="button" :disabled="Boolean(restoringTrashId) || !canEdit" @click="restoreTrashedNote(note)"><span v-if="restoringTrashId === note.id" class="spinner" /><ArchiveRestore v-else :size="16" />恢复</button>
+          </article>
+        </div>
+      </section>
+
+      <section class="trash-section">
+        <header><div><span>全部范围</span><strong>已回收知识库</strong></div><small>{{ trashedCollections.length }}</small></header>
+        <div v-if="trashedCollections.length === 0" class="trash-empty">没有已回收知识库。</div>
+        <div v-else class="trash-list">
+          <article v-for="collection in trashedCollections" :key="collection.id" class="trash-row">
+            <div class="trash-row__icon trash-row__icon--collection"><BookOpenText :size="17" /></div>
+            <div class="trash-row__body"><strong>{{ collection.name }}</strong><span>{{ collection.noteCount }} 篇活动文档 · {{ collection.deletedNoteCount }} 篇已删除 · {{ formatDate(collection.trashedAt) }}</span><small>{{ collection.trashedBy }}<template v-if="collection.trashReason"> · {{ collection.trashReason }}</template></small></div>
+            <button class="button button--secondary" type="button" :disabled="Boolean(restoringTrashId) || collection.role !== 'admin'" @click="restoreTrashedCollection(collection)"><span v-if="restoringTrashId === collection.id" class="spinner" /><ArchiveRestore v-else :size="16" />恢复</button>
+          </article>
+        </div>
+      </section>
+    </div>
   </ModalDialog>
 
   <ModalDialog v-if="showVersionsModal" title="版本记录" :description="selectedNote?.title" @close="showVersionsModal = false">

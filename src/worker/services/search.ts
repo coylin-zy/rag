@@ -36,6 +36,7 @@ async function lexicalCandidates(env: Env, query: string, collectionIds: string[
            c.content, n.updated_at, n.tags_json
     FROM chunks c
     JOIN notes n ON n.id = c.note_id AND n.indexed_version = c.version
+    JOIN collections k ON k.id = c.collection_id AND k.trashed_at IS NULL
   `;
   const isShort = [...query].length < 3;
   const statement = isShort
@@ -47,6 +48,7 @@ async function lexicalCandidates(env: Env, query: string, collectionIds: string[
         FROM chunks_fts
         JOIN chunks c ON c.id = chunks_fts.chunk_id
         JOIN notes n ON n.id = c.note_id AND n.indexed_version = c.version
+        JOIN collections k ON k.id = c.collection_id AND k.trashed_at IS NULL
         WHERE chunks_fts MATCH ? AND c.collection_id IN (${placeholders}) AND n.status = 'published'
         ORDER BY bm25(chunks_fts) LIMIT 30
       `).bind(ftsPhrase(query), ...collectionIds);
@@ -78,6 +80,7 @@ async function hydrateCandidates(env: Env, ids: string[], collectionIds: string[
            c.content, n.updated_at, n.tags_json
     FROM chunks c
     JOIN notes n ON n.id = c.note_id AND n.indexed_version = c.version
+    JOIN collections k ON k.id = c.collection_id AND k.trashed_at IS NULL
     WHERE c.id IN (${idPlaceholders}) AND c.collection_id IN (${collectionPlaceholders})
       AND n.status = 'published'
   `).bind(...ids, ...collectionIds).all<CandidateRow>();

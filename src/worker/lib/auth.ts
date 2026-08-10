@@ -210,14 +210,52 @@ export function adminAuth(): MiddlewareHandler<{ Bindings: Env; Variables: AppVa
   };
 }
 
-export async function collectionRole(env: Env, principal: AdminPrincipal, collectionId: string): Promise<Role | null> {
-  if (principal.bootstrapAdmin) return "admin";
-  const row = await env.DB.prepare(
-    "SELECT role FROM memberships WHERE collection_id = ? AND user_email = ? LIMIT 1",
-  )
+type CollectionState = "active" | "trashed" | "any";
+
+async function collectionRoleForState(
+  env: Env,
+  principal: AdminPrincipal,
+  collectionId: string,
+  state: CollectionState,
+): Promise<Role | null> {
+  const stateClause = state === "active"
+    ? "AND c.trashed_at IS NULL"
+    : state === "trashed"
+      ? "AND c.trashed_at IS NOT NULL"
+      : "";
+  if (principal.bootstrapAdmin) {
+    const collection = await env.DB.prepare(`SELECT c.id FROM collections c WHERE c.id = ? ${stateClause} LIMIT 1`)
+      .bind(collectionId)
+      .first<{ id: string }>();
+    return collection ? "admin" : null;
+  }
+  const row = await env.DB.prepare(`
+    SELECT m.role
+    FROM memberships m
+    JOIN collections c ON c.id = m.collection_id
+    WHERE m.collection_id = ? AND m.user_email = ? ${stateClause}
+    LIMIT 1
+  `)
     .bind(collectionId, principal.email)
     .first<{ role: Role }>();
   return row?.role ?? null;
+}
+
+export async function collectionRole(env: Env, principal: AdminPrincipal, collectionId: string): Promise<Role | null> {
+  return collectionRoleForState(env, principal, collectionId, "active");
+}
+
+async function requireRoleForState(
+  env: Env,
+  principal: AdminPrincipal,
+  collectionId: string,
+  minimum: Role,
+  state: CollectionState,
+): Promise<Role> {
+  const role = await collectionRoleForState(env, principal, collectionId, state);
+  if (!role) throw new ApiError(404, "collection_not_found", "知识库不存在或无权访问");
+  if (roleRank[role] < roleRank[minimum]) throw new ApiError(403, "insufficient_role", "当前角色没有执行该操作的权限");
+  return role;
 }
 
 export async function requireCollectionRole(
@@ -226,10 +264,25 @@ export async function requireCollectionRole(
   collectionId: string,
   minimum: Role,
 ): Promise<Role> {
-  const role = await collectionRole(env, principal, collectionId);
-  if (!role) throw new ApiError(404, "collection_not_found", "知识库不存在或无权访问");
-  if (roleRank[role] < roleRank[minimum]) throw new ApiError(403, "insufficient_role", "当前角色没有执行该操作的权限");
-  return role;
+  return requireRoleForState(env, principal, collectionId, minimum, "active");
+}
+
+export async function requireTrashedCollectionRole(
+  env: Env,
+  principal: AdminPrincipal,
+  collectionId: string,
+  minimum: Role,
+): Promise<Role> {
+  return requireRoleForState(env, principal, collectionId, minimum, "trashed");
+}
+
+export async function requireAnyCollectionRole(
+  env: Env,
+  principal: AdminPrincipal,
+  collectionId: string,
+  minimum: Role,
+): Promise<Role> {
+  return requireRoleForState(env, principal, collectionId, minimum, "any");
 }
 
 export async function authenticateMcpToken(env: Env, authorization: string | undefined): Promise<McpPrincipal> {
