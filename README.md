@@ -9,6 +9,8 @@
 
 Markdown 正文和历史版本存放在私有 R2；D1 保存权限、元数据、FTS、任务、Token 哈希与审计；Vectorize 保存 1024 维余弦向量。
 
+二期五项安全增强的详细规划见 [ROADMAP_5_FEATURES.md](./ROADMAP_5_FEATURES.md)。该文档当前是待实施路线图，不表示回收站、Token 限流、版本 Diff、来源时效或批量导入导出已经上线。
+
 > 上线状态（2026-07-14）：Worker 已部署到 `rag-api.coylin.com`；香港服务器上的 Vue/Nginx、Let's Encrypt HTTPS 和自动续期均已完成。`rag.coylin.com` 保持 DNS only，并使用站内登录页面保护管理后台。
 
 ## 系统要求

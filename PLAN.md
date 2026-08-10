@@ -4,6 +4,8 @@
 > 更新日期：2026-08-10<br>
 > 技术栈：Vue 3 + TypeScript + Hono + Cloudflare Workers + R2 + D1 + Vectorize + Queues + MCP
 
+> 二期的五项安全增强（回收站、最高权限 Token 风控、版本 Diff/回滚、来源时效、Markdown 导入导出）已拆成独立实施路线图，见 [ROADMAP_5_FEATURES.md](./ROADMAP_5_FEATURES.md)。路线图目前仅为规划，不代表功能已经实现或部署。
+
 ## 1. 项目定位
 
 本项目不是单纯的“上传文件后问答”系统，而是一个可供人和 AI Agent 共同使用的长期知识中枢。
@@ -321,6 +323,8 @@ Worker 后端没有“给服务器分配多少内存”的配置，持久数据�
 7. **运行观察**：首周关注请求错误率、Queue backlog、Embedding 失败率、D1/Vectorize 用量和费用。
 
 ### 阶段 F：二期增强（按实际需要）
+
+五项已选增强的依赖、迁移、接口和验收细节以 [ROADMAP_5_FEATURES.md](./ROADMAP_5_FEATURES.md) 为准；实现顺序不是下面清单的展示顺序。
 
 - [ ] Markdown ZIP/Git 导入导出与 Obsidian 工作流。
 - [ ] 附件、图片和文档间双向链接。
