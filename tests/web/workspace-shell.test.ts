@@ -455,7 +455,7 @@ describe("redesigned workspace shell", () => {
     await flushPromises();
 
     expect(wrapper.findAll("tbody td").map((cell) => cell.attributes("data-label"))).toEqual([
-      "名称", "知识库", "权限", "最近使用", "状态", "操作",
+      "名称", "知识库", "权限", "风控与用量", "最近使用", "状态", "操作",
     ]);
     wrapper.unmount();
   });
@@ -508,9 +508,43 @@ describe("redesigned workspace shell", () => {
       collectionIds: [],
       scopes: ["knowledge:admin"],
       expiresAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      maxRequestsPerMinute: 60,
+      maxWritesPerHour: 30,
     });
     expect(wrapper.text()).toContain("kcore_once");
     wrapper.unmount();
+  });
+
+  it("blocks a global Agent Token without a valid expiry and exposes emergency revoke", async () => {
+    const store = useAppStore();
+    store.initialized = true;
+    store.session = { principal: { email: "admin@coylin.com", subject: "admin", bootstrapAdmin: true } };
+    store.collections = [];
+    vi.mocked(api).mockImplementation(async (path: string, init: RequestInit = {}) => {
+      if (path === "/api/v1/tokens" && init.method === "POST") return { token: "kcore_once" };
+      if (path === "/api/v1/tokens/revoke-knowledge-admin" && init.method === "POST") return { revokedCount: 2 };
+      return [];
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    const wrapper = mount(TokensView, { global: { stubs: { Teleport: true } } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="revoke-all-admin-tokens"]').exists()).toBe(true);
+    await wrapper.get('[data-testid="create-token-trigger"]').trigger("click");
+    await wrapper.get('[data-testid="token-scope-admin"]').setValue(true);
+    await wrapper.get("#token-expiry").setValue("");
+    expect(wrapper.text()).toContain("最高权限 Token 必须设置到期时间");
+    expect(wrapper.get('button[type="submit"]').attributes("disabled")).toBeDefined();
+    await wrapper.get("#token-expiry").setValue("2026-08-20T12:00");
+    await wrapper.get("#token-request-limit").setValue("120");
+    await wrapper.get("#token-write-limit").setValue("40");
+    expect(wrapper.get('button[type="submit"]').attributes("disabled")).toBeUndefined();
+    await wrapper.get('[data-testid="revoke-all-admin-tokens"]').trigger("click");
+    await flushPromises();
+    expect(confirm).toHaveBeenCalled();
+    expect(api).toHaveBeenCalledWith("/api/v1/tokens/revoke-knowledge-admin", { method: "POST" });
+    wrapper.unmount();
+    confirm.mockRestore();
   });
 
   it("does not offer the global Agent permission to non-bootstrap administrators", async () => {

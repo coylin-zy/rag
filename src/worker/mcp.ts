@@ -19,6 +19,7 @@ import {
 } from "./services/notes";
 import { submitProposal } from "./services/proposals";
 import { searchKnowledge } from "./services/search";
+import { recordAdminFailure, recordAdminUsage, runAdminMutation } from "./services/tokenRisk";
 
 function toolResult(value: unknown) {
   return {
@@ -27,9 +28,54 @@ function toolResult(value: unknown) {
   };
 }
 
+function toolError(error: unknown) {
+  if (!(error instanceof ApiError)) return null;
+  return {
+    content: [{
+      type: "text" as const,
+      text: JSON.stringify({ error: { code: error.code, message: error.message, details: error.details } }, null, 2),
+    }],
+    structuredContent: { error: { code: error.code, message: error.message, details: error.details } },
+    isError: true,
+  };
+}
+
 function requireScope(principal: McpPrincipal, scope: McpPrincipal["scopes"][number]) {
   if (!principal.scopes.includes(scope) && !isKnowledgeAdmin(principal)) {
     throw new ApiError(403, "scope_required", `Token 缺少 ${scope} 权限`);
+  }
+}
+
+async function tracked<T>(
+  env: Env,
+  principal: McpPrincipal,
+  category: "read" | "search" | "proposal",
+  operation: () => Promise<T>,
+) {
+  try {
+    const result = await operation();
+    if (isKnowledgeAdmin(principal)) await recordAdminUsage(env, principal, category);
+    return toolResult(result);
+  } catch (error) {
+    if (isKnowledgeAdmin(principal)) await recordAdminFailure(env, principal).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function mutationResult<T>(
+  env: Env,
+  principal: McpPrincipal,
+  operationId: string,
+  toolName: string,
+  input: unknown,
+  operation: () => Promise<T>,
+) {
+  try {
+    return toolResult(await runAdminMutation(env, principal, operationId, toolName, input, operation));
+  } catch (error) {
+    const response = toolError(error);
+    if (response) return response;
+    throw error;
   }
 }
 
@@ -74,18 +120,18 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ query, collection_ids, tags, limit }) => {
+    async ({ query, collection_ids, tags, limit }) => tracked(env, principal, "search", async () => {
       requireScope(principal, "knowledge:read");
       const allowedCollectionIds = await collectionIdsForToken(env, principal);
-      if (allowedCollectionIds.length === 0 && !collection_ids?.length) return toolResult([]);
+      if (allowedCollectionIds.length === 0 && !collection_ids?.length) return [];
       const input = searchSchema.parse({
         query,
         collectionIds: collection_ids?.length ? collection_ids : allowedCollectionIds,
         tags: tags ?? [],
         limit: limit ?? 8,
       });
-      return toolResult(await searchKnowledge(env, input, allowedCollectionIds));
-    },
+      return searchKnowledge(env, input, allowedCollectionIds);
+    }),
   );
 
   server.registerTool(
@@ -96,11 +142,11 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
       inputSchema: { note_id: z.string().uuid() },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ note_id }) => {
+    async ({ note_id }) => tracked(env, principal, "read", async () => {
       requireScope(principal, "knowledge:read");
-      if (isKnowledgeAdmin(principal)) return toolResult(await readNoteForMcpAdmin(env, principal, note_id));
-      return toolResult(await readNoteForCollections(env, await collectionIdsForToken(env, principal), note_id));
-    },
+      if (isKnowledgeAdmin(principal)) return readNoteForMcpAdmin(env, principal, note_id);
+      return readNoteForCollections(env, await collectionIdsForToken(env, principal), note_id);
+    }),
   );
 
   server.registerTool(
@@ -117,7 +163,7 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ collection_ids, tags, updated_after, limit, include_drafts }) => {
+    async ({ collection_ids, tags, updated_after, limit, include_drafts }) => tracked(env, principal, "read", async () => {
       requireScope(principal, "knowledge:read");
       if (include_drafts && !isKnowledgeAdmin(principal)) {
         throw new ApiError(403, "scope_required", "读取草稿需要 knowledge:admin 权限");
@@ -125,13 +171,13 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
       const allowedCollectionIds = await collectionIdsForToken(env, principal);
       const requested = collection_ids?.length ? collection_ids : allowedCollectionIds;
       const authorized = requested.filter((id) => allowedCollectionIds.includes(id));
-      return toolResult(await listNotesForCollections(env, authorized, {
+      return listNotesForCollections(env, authorized, {
         tags: tags ?? [],
         updatedAfter: updated_after,
         limit: limit ?? 100,
         includeDrafts: include_drafts ?? false,
-      }));
-    },
+      });
+    }),
   );
 
   server.registerTool(
@@ -141,10 +187,10 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
       description: "List knowledge bases authorized for this token.",
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async () => {
+    async () => tracked(env, principal, "read", async () => {
       requireScope(principal, "knowledge:read");
-      return toolResult(await collectionsForToken(env, principal));
-    },
+      return collectionsForToken(env, principal);
+    }),
   );
 
   server.registerTool(
@@ -158,18 +204,18 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ since, limit }) => {
+    async ({ since, limit }) => tracked(env, principal, "read", async () => {
       requireScope(principal, "knowledge:read");
       const collectionIds = await collectionIdsForToken(env, principal);
-      if (collectionIds.length === 0) return toolResult([]);
+      if (collectionIds.length === 0) return [];
       const placeholders = collectionIds.map(() => "?").join(",");
       const result = await env.DB.prepare(`
         SELECT id, collection_id, title, tags_json, version, updated_at, updated_by
         FROM notes WHERE collection_id IN (${placeholders}) AND status = 'published' AND updated_at > ?
         ORDER BY updated_at DESC LIMIT ?
       `).bind(...collectionIds, since, limit ?? 100).all();
-      return toolResult(result.results ?? []);
-    },
+      return result.results ?? [];
+    }),
   );
 
   if (isKnowledgeAdmin(principal)) {
@@ -179,12 +225,13 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         title: "Create knowledge base",
         description: "Create a knowledge base. The administrator who issued this global token remains its human owner.",
         inputSchema: {
+          operation_id: z.string().uuid(),
           name: z.string().trim().min(1).max(80),
           description: z.string().trim().max(500).optional(),
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       },
-      async ({ name, description }) => toolResult(await createCollection(env, principal, { name, description: description ?? "" })),
+      async ({ operation_id, name, description }) => mutationResult(env, principal, operation_id, "create_collection", { name, description: description ?? "" }, () => createCollection(env, principal, { name, description: description ?? "" })),
     );
 
     server.registerTool(
@@ -193,6 +240,7 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         title: "Update knowledge base",
         description: "Rename or update a knowledge base using its last observed updated_at value for optimistic locking.",
         inputSchema: {
+          operation_id: z.string().uuid(),
           collection_id: z.string().uuid(),
           expected_updated_at: z.string().datetime(),
           name: z.string().trim().min(1).max(80),
@@ -200,13 +248,14 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       },
-      async ({ collection_id, expected_updated_at, name, description }) => toolResult(await updateCollection(
+      async ({ operation_id, collection_id, expected_updated_at, name, description }) => mutationResult(
         env,
         principal,
-        collection_id,
-        expected_updated_at,
-        { name, description },
-      )),
+        operation_id,
+        "update_collection",
+        { collection_id, expected_updated_at, name, description },
+        () => updateCollection(env, principal, collection_id, expected_updated_at, { name, description }),
+      ),
     );
 
     server.registerTool(
@@ -215,6 +264,7 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         title: "Move knowledge base to trash",
         description: "Hide a knowledge base from normal API and MCP access while preserving all Markdown, versions, members, tokens and proposals for recovery.",
         inputSchema: {
+          operation_id: z.string().uuid(),
           collection_id: z.string().uuid(),
           expected_updated_at: z.string().datetime(),
           confirm_name: z.string().min(1).max(80),
@@ -222,12 +272,14 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         },
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       },
-      async ({ collection_id, expected_updated_at, confirm_name, reason }) => toolResult(await trashCollection(
+      async ({ operation_id, collection_id, expected_updated_at, confirm_name, reason }) => mutationResult(
         env,
         principal,
-        collection_id,
-        { expectedUpdatedAt: expected_updated_at, confirmationName: confirm_name, reason },
-      )),
+        operation_id,
+        "trash_collection",
+        { collection_id, expected_updated_at, confirm_name, reason: reason ?? "" },
+        () => trashCollection(env, principal, collection_id, { expectedUpdatedAt: expected_updated_at, confirmationName: confirm_name, reason }),
+      ),
     );
 
     server.registerTool(
@@ -236,6 +288,7 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         title: "Move knowledge base to trash (compatibility alias)",
         description: "Compatibility alias for trash_collection. This never physically deletes D1, R2, versions, members, tokens or proposals.",
         inputSchema: {
+          operation_id: z.string().uuid(),
           collection_id: z.string().uuid(),
           expected_updated_at: z.string().datetime(),
           confirm_name: z.string().min(1).max(80),
@@ -243,12 +296,14 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         },
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       },
-      async ({ collection_id, expected_updated_at, confirm_name, reason }) => toolResult(await trashCollection(
+      async ({ operation_id, collection_id, expected_updated_at, confirm_name, reason }) => mutationResult(
         env,
         principal,
-        collection_id,
-        { expectedUpdatedAt: expected_updated_at, confirmationName: confirm_name, reason },
-      )),
+        operation_id,
+        "delete_collection",
+        { collection_id, expected_updated_at, confirm_name, reason: reason ?? "" },
+        () => trashCollection(env, principal, collection_id, { expectedUpdatedAt: expected_updated_at, confirmationName: confirm_name, reason }),
+      ),
     );
 
     server.registerTool(
@@ -257,17 +312,20 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         title: "Restore knowledge base from trash",
         description: "Restore a trashed knowledge base using the last observed trashed_at value.",
         inputSchema: {
+          operation_id: z.string().uuid(),
           collection_id: z.string().uuid(),
           expected_trashed_at: z.string().datetime(),
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       },
-      async ({ collection_id, expected_trashed_at }) => toolResult(await restoreCollection(
+      async ({ operation_id, collection_id, expected_trashed_at }) => mutationResult(
         env,
         principal,
-        collection_id,
-        expected_trashed_at,
-      )),
+        operation_id,
+        "restore_collection",
+        { collection_id, expected_trashed_at },
+        () => restoreCollection(env, principal, collection_id, expected_trashed_at),
+      ),
     );
 
     server.registerTool(
@@ -276,12 +334,20 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         title: "Create Markdown note",
         description: "Create a draft or published Markdown note in a knowledge base. YAML frontmatter is required.",
         inputSchema: {
+          operation_id: z.string().uuid(),
           collection_id: z.string().uuid(),
           markdown: z.string().min(1).max(MAX_MARKDOWN_BYTES),
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       },
-      async ({ collection_id, markdown }) => toolResult(await createNote(env, principal, collection_id, markdown)),
+      async ({ operation_id, collection_id, markdown }) => mutationResult(
+        env,
+        principal,
+        operation_id,
+        "create_note",
+        { collection_id, markdown },
+        () => createNote(env, principal, collection_id, markdown),
+      ),
     );
 
     server.registerTool(
@@ -290,13 +356,21 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         title: "Update Markdown note",
         description: "Update Markdown using the last observed version for optimistic locking.",
         inputSchema: {
+          operation_id: z.string().uuid(),
           note_id: z.string().uuid(),
           expected_version: z.number().int().positive(),
           markdown: z.string().min(1).max(MAX_MARKDOWN_BYTES),
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       },
-      async ({ note_id, expected_version, markdown }) => toolResult(await updateNote(env, principal, note_id, expected_version, markdown)),
+      async ({ operation_id, note_id, expected_version, markdown }) => mutationResult(
+        env,
+        principal,
+        operation_id,
+        "update_note",
+        { note_id, expected_version, markdown },
+        () => updateNote(env, principal, note_id, expected_version, markdown),
+      ),
     );
 
     server.registerTool(
@@ -305,6 +379,7 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         title: "Delete Markdown note",
         description: "Soft-delete a note after matching both its current version and exact title.",
         inputSchema: {
+          operation_id: z.string().uuid(),
           note_id: z.string().uuid(),
           expected_version: z.number().int().positive(),
           confirm_title: z.string().min(1).max(160),
@@ -312,9 +387,14 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         },
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       },
-      async ({ note_id, expected_version, confirm_title, reason }) => toolResult({
-        ...await deleteNote(env, principal, note_id, { expectedVersion: expected_version, confirmationTitle: confirm_title, reason }),
-      }),
+      async ({ operation_id, note_id, expected_version, confirm_title, reason }) => mutationResult(
+        env,
+        principal,
+        operation_id,
+        "delete_note",
+        { note_id, expected_version, confirm_title, reason: reason ?? "" },
+        () => deleteNote(env, principal, note_id, { expectedVersion: expected_version, confirmationTitle: confirm_title, reason }),
+      ),
     );
 
     server.registerTool(
@@ -323,18 +403,21 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         title: "Restore Markdown note from trash",
         description: "Restore a soft-deleted note using its last observed version and deleted_at value.",
         inputSchema: {
+          operation_id: z.string().uuid(),
           note_id: z.string().uuid(),
           expected_version: z.number().int().positive(),
           expected_deleted_at: z.string().datetime(),
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       },
-      async ({ note_id, expected_version, expected_deleted_at }) => toolResult(await restoreDeletedNote(
+      async ({ operation_id, note_id, expected_version, expected_deleted_at }) => mutationResult(
         env,
         principal,
-        note_id,
-        { expectedVersion: expected_version, expectedDeletedAt: expected_deleted_at },
-      )),
+        operation_id,
+        "restore_note",
+        { note_id, expected_version, expected_deleted_at },
+        () => restoreDeletedNote(env, principal, note_id, { expectedVersion: expected_version, expectedDeletedAt: expected_deleted_at }),
+      ),
     );
   }
 
@@ -354,7 +437,8 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
     },
     async ({ collection_id, title, body, tags, source }) => {
       const input = proposalSchema.parse({ collectionId: collection_id, title, body, tags: tags ?? [], source: source ?? "agent" });
-      return toolResult(await submitProposal(env, principal, input));
+      if (!isKnowledgeAdmin(principal)) return toolResult(await submitProposal(env, principal, input));
+      return tracked(env, principal, "proposal", () => submitProposal(env, principal, input));
     },
   );
 

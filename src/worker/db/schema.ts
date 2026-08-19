@@ -117,8 +117,67 @@ export const apiTokens = sqliteTable(
     expiresAt: text("expires_at"),
     lastUsedAt: text("last_used_at"),
     revokedAt: text("revoked_at"),
+    maxRequestsPerMinute: integer("max_requests_per_minute").notNull().default(60),
+    maxWritesPerHour: integer("max_writes_per_hour").notNull().default(30),
+    lastIpPrefix: text("last_ip_prefix"),
+    lastIpChangedAt: text("last_ip_changed_at"),
   },
   (table) => [uniqueIndex("idx_api_tokens_hash").on(table.tokenHash)],
+);
+
+export const tokenRateWindows = sqliteTable(
+  "token_rate_windows",
+  {
+    tokenId: text("token_id").notNull(),
+    windowKind: text("window_kind", { enum: ["request_minute", "write_hour"] }).notNull(),
+    windowStart: text("window_start").notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tokenId, table.windowKind, table.windowStart] }),
+    index("idx_token_rate_windows_cleanup").on(table.windowStart),
+  ],
+);
+
+export const tokenUsageDaily = sqliteTable(
+  "token_usage_daily",
+  {
+    tokenId: text("token_id").notNull(),
+    usageDate: text("usage_date").notNull(),
+    requests: integer("requests").notNull().default(0),
+    reads: integer("reads").notNull().default(0),
+    searches: integer("searches").notNull().default(0),
+    proposals: integer("proposals").notNull().default(0),
+    writes: integer("writes").notNull().default(0),
+    failures: integer("failures").notNull().default(0),
+    throttles: integer("throttles").notNull().default(0),
+    lastUsedAt: text("last_used_at"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tokenId, table.usageDate] }),
+    index("idx_token_usage_daily_date").on(table.usageDate),
+  ],
+);
+
+export const tokenMutationReceipts = sqliteTable(
+  "token_mutation_receipts",
+  {
+    tokenId: text("token_id").notNull(),
+    operationId: text("operation_id").notNull(),
+    toolName: text("tool_name").notNull(),
+    inputHash: text("input_hash").notNull(),
+    status: text("status", { enum: ["pending", "completed", "failed"] }).notNull(),
+    resultJson: text("result_json"),
+    errorCode: text("error_code"),
+    createdAt: text("created_at").notNull(),
+    completedAt: text("completed_at"),
+    failedAt: text("failed_at"),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tokenId, table.operationId] }),
+    index("idx_token_mutation_receipts_cleanup").on(table.expiresAt),
+  ],
 );
 
 export const memoryProposals = sqliteTable(

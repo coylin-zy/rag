@@ -200,7 +200,7 @@ describe("management API, D1 and R2", () => {
         name: "Bootstrap global token",
         collectionIds: [collection.id],
         scopes: ["knowledge:admin"],
-        expiresAt: null,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       }),
     );
     expect(created.response.status).toBe(201);

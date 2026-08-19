@@ -49,6 +49,9 @@ export interface McpPrincipal {
   createdBy: string;
   collectionIds: string[];
   scopes: TokenScope[];
+  ipPrefix: string | null;
+  maxRequestsPerMinute: number;
+  maxWritesPerHour: number;
 }
 
 export type KnowledgePrincipal = AdminPrincipal | McpPrincipal;

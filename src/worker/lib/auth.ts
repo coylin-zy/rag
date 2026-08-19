@@ -10,6 +10,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { sha256 } from "./crypto";
 import { ApiError } from "./errors";
 import { normalizeEmail, nowIso, parseJson } from "./utils";
+import { consumeAdminRequestBudget, normalizeIpPrefix } from "../services/tokenRisk";
 
 const jwksByDomain = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 const roleRank: Record<Role, number> = { viewer: 1, editor: 2, admin: 3 };
@@ -285,7 +286,11 @@ export async function requireAnyCollectionRole(
   return requireRoleForState(env, principal, collectionId, minimum, "any");
 }
 
-export async function authenticateMcpToken(env: Env, authorization: string | undefined): Promise<McpPrincipal> {
+export async function authenticateMcpToken(
+  env: Env,
+  authorization: string | undefined,
+  clientIp?: string | null,
+): Promise<McpPrincipal> {
   if (!authorization?.startsWith("Bearer ")) throw new ApiError(401, "mcp_token_required", "缺少 MCP Bearer Token");
   const rawToken = authorization.slice(7).trim();
   if (!/^kcore_[A-Za-z0-9_-]{43}$/.test(rawToken)) throw new ApiError(401, "invalid_mcp_token", "MCP Token 无效");
@@ -295,16 +300,28 @@ export async function authenticateMcpToken(env: Env, authorization: string | und
   const token = await db.query.apiTokens.findFirst({
     where: and(eq(apiTokens.tokenHash, tokenHash), isNull(apiTokens.revokedAt)),
   });
+  const scopes = parseJson<McpPrincipal["scopes"]>(token?.scopesJson ?? "[]", []);
+  const isAdmin = scopes.includes("knowledge:admin");
   if (!token || (token.expiresAt && token.expiresAt <= nowIso())) {
     throw new ApiError(401, "invalid_mcp_token", "MCP Token 无效或已过期");
   }
-
-  await db.update(apiTokens).set({ lastUsedAt: nowIso() }).where(eq(apiTokens.id, token.id));
-  return {
+  if (isAdmin && !token.expiresAt) {
+    throw new ApiError(401, "admin_token_policy_violation", "最高权限 MCP Token 必须设置到期时间，请重新签发");
+  }
+  const principal: McpPrincipal = {
     tokenId: token.id,
     name: token.name,
     createdBy: token.createdBy,
     collectionIds: parseJson<string[]>(token.collectionIdsJson, []),
-    scopes: parseJson<McpPrincipal["scopes"]>(token.scopesJson, []),
+    scopes,
+    ipPrefix: normalizeIpPrefix(clientIp),
+    maxRequestsPerMinute: token.maxRequestsPerMinute,
+    maxWritesPerHour: token.maxWritesPerHour,
   };
+  if (isAdmin) {
+    await consumeAdminRequestBudget(env, principal);
+  } else {
+    await db.update(apiTokens).set({ lastUsedAt: nowIso() }).where(eq(apiTokens.id, token.id));
+  }
+  return principal;
 }

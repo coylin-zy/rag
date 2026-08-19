@@ -21,9 +21,12 @@ interface JsonRpcResponse {
 afterEach(() => vi.restoreAllMocks());
 
 async function createToken(collectionIds: string[], scopes = ["knowledge:read"]) {
+  const expiresAt = scopes.includes("knowledge:admin")
+    ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+    : null;
   const created = await apiRequest<{ id: string; token: string }>(
     "/api/v1/tokens",
-    jsonInit("POST", { name: "Codex test", collectionIds, scopes, expiresAt: null }),
+    jsonInit("POST", { name: "Codex test", collectionIds, scopes, expiresAt }),
   );
   if (!created.response.ok || !("data" in created.body)) throw new Error("Token creation failed");
   return created.body.data;
@@ -167,7 +170,7 @@ describe("stateless MCP contract", () => {
 
     const createdCollectionResponse = await rpc(token.token, "tools/call", {
       name: "create_collection",
-      arguments: { name: "Agent managed", description: "Created through MCP" },
+      arguments: { operation_id: crypto.randomUUID(), name: "Agent managed", description: "Created through MCP" },
     }, 2);
     const createdCollection = createdCollectionResponse.body.result?.structuredContent?.result as {
       id: string;
@@ -182,6 +185,7 @@ describe("stateless MCP contract", () => {
     const updatedCollectionResponse = await rpc(token.token, "tools/call", {
       name: "update_collection",
       arguments: {
+        operation_id: crypto.randomUUID(),
         collection_id: createdCollection.id,
         expected_updated_at: createdCollection.updatedAt,
         name: "Agent managed v2",
@@ -198,6 +202,7 @@ describe("stateless MCP contract", () => {
     const staleCollectionUpdate = await rpc(token.token, "tools/call", {
       name: "update_collection",
       arguments: {
+        operation_id: crypto.randomUUID(),
         collection_id: createdCollection.id,
         expected_updated_at: createdCollection.updatedAt,
         name: "Stale overwrite",
@@ -209,7 +214,7 @@ describe("stateless MCP contract", () => {
     const firstMarkdown = "---\ntitle: Agent CRUD note\ntags: [agent, crud]\nstatus: draft\n---\n\n# Agent CRUD note\n\nFirst version.";
     const createdNoteResponse = await rpc(token.token, "tools/call", {
       name: "create_note",
-      arguments: { collection_id: createdCollection.id, markdown: firstMarkdown },
+      arguments: { operation_id: crypto.randomUUID(), collection_id: createdCollection.id, markdown: firstMarkdown },
     }, 5);
     const createdNote = createdNoteResponse.body.result?.structuredContent?.result as {
       id: string;
@@ -262,26 +267,26 @@ describe("stateless MCP contract", () => {
       .replace("First version.", "Second version.");
     const updatedNoteResponse = await rpc(token.token, "tools/call", {
       name: "update_note",
-      arguments: { note_id: createdNote.id, expected_version: 1, markdown: secondMarkdown },
+      arguments: { operation_id: crypto.randomUUID(), note_id: createdNote.id, expected_version: 1, markdown: secondMarkdown },
     }, 10);
     const updatedNote = updatedNoteResponse.body.result?.structuredContent?.result as { title: string; version: number };
     expect(updatedNote).toMatchObject({ title: "Agent CRUD note v2", version: 2 });
 
     const staleNoteUpdate = await rpc(token.token, "tools/call", {
       name: "update_note",
-      arguments: { note_id: createdNote.id, expected_version: 1, markdown: firstMarkdown },
+      arguments: { operation_id: crypto.randomUUID(), note_id: createdNote.id, expected_version: 1, markdown: firstMarkdown },
     }, 11);
     expect(staleNoteUpdate.body.result?.isError ?? Boolean(staleNoteUpdate.body.error)).toBe(true);
 
     const wrongDelete = await rpc(token.token, "tools/call", {
       name: "delete_note",
-      arguments: { note_id: createdNote.id, expected_version: 2, confirm_title: "Wrong title" },
+      arguments: { operation_id: crypto.randomUUID(), note_id: createdNote.id, expected_version: 2, confirm_title: "Wrong title" },
     }, 12);
     expect(wrongDelete.body.result?.isError ?? Boolean(wrongDelete.body.error)).toBe(true);
 
     const deletedNote = await rpc(token.token, "tools/call", {
       name: "delete_note",
-      arguments: { note_id: createdNote.id, expected_version: 2, confirm_title: "Agent CRUD note v2" },
+      arguments: { operation_id: crypto.randomUUID(), note_id: createdNote.id, expected_version: 2, confirm_title: "Agent CRUD note v2" },
     }, 13);
     const deletedNoteResult = deletedNote.body.result?.structuredContent?.result as { jobId: string; deletedAt: string };
     expect(deletedNoteResult).toMatchObject({ jobId: expect.any(String), deletedAt: expect.any(String) });
@@ -289,6 +294,7 @@ describe("stateless MCP contract", () => {
     const wrongCollectionDelete = await rpc(token.token, "tools/call", {
       name: "delete_collection",
       arguments: {
+        operation_id: crypto.randomUUID(),
         collection_id: createdCollection.id,
         expected_updated_at: updatedCollection.updatedAt,
         confirm_name: "Wrong name",
@@ -299,6 +305,7 @@ describe("stateless MCP contract", () => {
     const deletedCollection = await rpc(token.token, "tools/call", {
       name: "delete_collection",
       arguments: {
+        operation_id: crypto.randomUUID(),
         collection_id: createdCollection.id,
         expected_updated_at: updatedCollection.updatedAt,
         confirm_name: "Agent managed v2",
@@ -319,12 +326,13 @@ describe("stateless MCP contract", () => {
 
     const restoredCollection = await rpc(token.token, "tools/call", {
       name: "restore_collection",
-      arguments: { collection_id: createdCollection.id, expected_trashed_at: deletedCollectionResult.trashedAt },
+      arguments: { operation_id: crypto.randomUUID(), collection_id: createdCollection.id, expected_trashed_at: deletedCollectionResult.trashedAt },
     }, 18);
     expect(restoredCollection.body.result?.structuredContent?.result).toMatchObject({ restored: true, collectionId: createdCollection.id });
     const restoredNote = await rpc(token.token, "tools/call", {
       name: "restore_note",
       arguments: {
+        operation_id: crypto.randomUUID(),
         note_id: createdNote.id,
         expected_version: 2,
         expected_deleted_at: deletedNoteResult.deletedAt,

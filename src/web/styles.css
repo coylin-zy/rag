@@ -112,6 +112,7 @@ a { color: inherit; }
 .field { display: grid; gap: 6px; }
 .field > label, .field-label { color: #343942; font-size: 12px; font-weight: 650; }
 .field-hint { margin: 0; color: var(--text-muted); font-size: 12px; }
+.form-error { margin: 0; color: var(--danger); font-size: 12px; }
 .input, .textarea, .select { width: 100%; min-height: 40px; padding: 8px 10px; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 5px; }
 .input:hover, .textarea:hover, .select:hover { border-color: #a6aeba; }
 .input:focus, .textarea:focus, .select:focus { border-color: var(--focus); outline: 3px solid rgb(76 124 240 / 14%); }
@@ -130,6 +131,8 @@ a { color: inherit; }
 .table-title { font-weight: 600; }
 .table-meta { color: var(--text-muted); font-size: 12px; }
 .table-actions { display: flex; justify-content: flex-end; gap: 4px; }
+.text-button { padding: 0; color: var(--primary); background: transparent; border: 0; font-size: 11px; cursor: pointer; }
+.text-button:disabled { cursor: wait; opacity: .5; }
 .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 12px; font-variant-numeric: tabular-nums; }
 
 .status-badge { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 650; white-space: nowrap; }
@@ -323,8 +326,14 @@ a { color: inherit; }
 .token-state::before { width: 7px; height: 7px; border-radius: 50%; content: ""; background: currentColor; }
 .token-state--active { color: var(--success); }
 .token-state--revoked { color: var(--text-muted); }
+.token-risk-alert { color: var(--danger); }
 .token-reveal { display: grid; gap: 14px; }
 .token-reveal code { display: block; overflow-wrap: anywhere; padding: 14px; color: #e8edf5; background: #202328; border-radius: 5px; font: 12px/1.7 "SFMono-Regular", Consolas, monospace; }
+.usage-summary { margin-bottom: 16px; }
+.usage-anomalies { display: grid; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.usage-anomalies h4 { margin: 0; font-size: 13px; }
+.usage-anomalies > div { display: flex; justify-content: space-between; gap: 12px; color: var(--danger); font-size: 12px; }
+.usage-anomalies time { color: var(--text-muted); }
 .stat-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
 .stat-strip > div { min-height: 74px; display: flex; align-items: center; gap: 12px; padding: 13px 18px; color: var(--info); border-right: 1px solid var(--border); }
 .stat-strip > div:last-child { border-right: 0; }

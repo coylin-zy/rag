@@ -37,6 +37,8 @@ export const createTokenSchema = z.object({
   collectionIds: z.array(z.string().uuid()).max(50),
   scopes: z.array(tokenScopeSchema).min(1),
   expiresAt: z.string().datetime().nullable().default(null),
+  maxRequestsPerMinute: z.number().int().min(1).max(600).default(60),
+  maxWritesPerHour: z.number().int().min(1).max(1000).default(30),
 }).superRefine((input, context) => {
   const isKnowledgeAdmin = input.scopes.includes("knowledge:admin");
   if (isKnowledgeAdmin && input.scopes.length !== 1) {

@@ -9,7 +9,7 @@
 
 Markdown 正文和历史版本存放在私有 R2；D1 保存权限、元数据、FTS、任务、Token 哈希与审计；Vectorize 保存 1024 维余弦向量。
 
-二期五项安全增强的详细规划见 [ROADMAP_5_FEATURES.md](./ROADMAP_5_FEATURES.md)。回收站与可恢复软删除已经在当前分支完成本地实现，仍未部署；Token 限流、版本 Diff、来源时效和批量导入导出尚未实现。
+二期五项安全增强的详细规划见 [ROADMAP_5_FEATURES.md](./ROADMAP_5_FEATURES.md)。回收站与最高权限 Token 风控已经在当前分支完成本地实现与测试，仍未部署；版本 Diff、来源时效和批量导入导出尚未实现。
 
 > 上线状态（2026-07-14）：Worker 已部署到 `rag-api.coylin.com`；香港服务器上的 Vue/Nginx、Let's Encrypt HTTPS 和自动续期均已完成。`rag.coylin.com` 保持 DNS only，并使用站内登录页面保护管理后台。
 
@@ -160,7 +160,7 @@ Nginx 对 `/api/` 的 `proxy_pass` 不包含路径后缀，因此会原样保留
 
 ## 连接 Codex MCP
 
-在管理后台的“`MCP Token`”页面创建 Token。普通 Agent 使用 `knowledge:read`；需要提交记忆提案时再增加 `memory:propose`。只有 `BOOTSTRAP_ADMIN_EMAILS` 中的初始管理员能签发 `knowledge:admin`：它覆盖所有当前及未来知识库，并允许受信任 Agent 直接 CRUD 知识库与 Markdown，但不能管理 Token、成员或管理员账号。建议为最高权限 Token 单独命名、设置较短有效期（页面默认 24 小时），任务结束后立即撤销。
+在管理后台的“`MCP Token`”页面创建 Token。普通 Agent 使用 `knowledge:read`；需要提交记忆提案时再增加 `memory:propose`。只有 `BOOTSTRAP_ADMIN_EMAILS` 中的初始管理员能签发 `knowledge:admin`：它覆盖所有当前及未来知识库，并允许受信任 Agent 直接 CRUD 知识库与 Markdown，但不能管理 Token、成员或管理员账号。最高权限 Token 必须设置 5 分钟至 7 天的有效期，默认 24 小时，并带有每分钟请求、每小时写入限额；任务结束后立即撤销，bootstrap 管理员也可以在 Token 页面一键撤销全部最高权限 Token。
 
 先把 Token 放入运行 Codex 的环境变量：
 
@@ -205,7 +205,7 @@ tool_timeout_sec = 60
 kb://collections/{collectionId}/notes/{noteId}
 ```
 
-普通 Token 对正式知识只读；`propose_memory` 只创建待审核提案，管理员批准后才生成正式 Markdown 并进入索引。最高权限 Token 可以直接写正式知识，但集合更新/回收必须携带最后读取的 `updated_at`，文档更新/回收必须携带当前 `version`，移入回收站还必须精确确认知识库名称或文档标题。回收后普通 API、搜索、MCP Tool 与 Resource 都无法读取对象；恢复使用最后观察到的 `trashed_at/deleted_at` 防止并发覆盖。所有 Agent 写入都会记录 Token 身份和不可变审计事件。
+普通 Token 对正式知识只读；`propose_memory` 只创建待审核提案，管理员批准后才生成正式 Markdown 并进入索引。最高权限 Token 可以直接写正式知识，但集合更新/回收必须携带最后读取的 `updated_at`，文档更新/回收必须携带当前 `version`，移入回收站还必须精确确认知识库名称或文档标题。最高权限 MCP 写工具都必须携带新的 UUID `operation_id`；网络重试使用相同 ID 会回放原结果，篡改输入会被拒绝。回收后普通 API、搜索、MCP Tool 与 Resource 都无法读取对象；恢复使用最后观察到的 `trashed_at/deleted_at` 防止并发覆盖。所有 Agent 写入都会记录 Token 身份和不可变审计事件。
 
 ## 数据布局
 

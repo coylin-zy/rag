@@ -51,7 +51,12 @@ import {
 } from "./services/notes";
 import { listProposals, readProposal, reviewProposal } from "./services/proposals";
 import { searchKnowledge } from "./services/search";
-import { createToken, listTokens, revokeToken } from "./services/tokens";
+import {
+  createToken,
+  listTokens,
+  revokeToken,
+} from "./services/tokens";
+import { getTokenUsage, revokeAllKnowledgeAdminTokens } from "./services/tokenRisk";
 
 type AppEnv = { Bindings: Env; Variables: AppVariables };
 
@@ -85,7 +90,11 @@ app.onError((error, c) => errorResponse(c, error));
 app.get("/healthz", (c) => c.json({ status: "ok" }));
 
 app.all("/mcp", async (c) => {
-  const principal = await authenticateMcpToken(c.env, c.req.header("authorization"));
+  const principal = await authenticateMcpToken(
+    c.env,
+    c.req.header("authorization"),
+    c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for"),
+  );
   return handleMcpRequest(c.req.raw, c.env, principal);
 });
 
@@ -255,6 +264,17 @@ app.get("/api/v1/tokens", async (c) => ok(c, await listTokens(c.env, c.get("prin
 app.post("/api/v1/tokens", async (c) => {
   const input = createTokenSchema.parse(await c.req.json());
   return ok(c, await createToken(c.env, c.get("principal"), input), 201);
+});
+app.post("/api/v1/tokens/revoke-knowledge-admin", async (c) => {
+  const principal = c.get("principal");
+  if (!principal.bootstrapAdmin) throw new ApiError(403, "bootstrap_admin_required", "只有初始管理员可以紧急撤销最高权限 Token");
+  return ok(c, { revokedCount: await revokeAllKnowledgeAdminTokens(c.env, principal.email) });
+});
+app.get("/api/v1/tokens/:tokenId/usage", async (c) => {
+  const principal = c.get("principal");
+  if (!principal.bootstrapAdmin) throw new ApiError(403, "bootstrap_admin_required", "只有初始管理员可以查看最高权限 Token 用量");
+  const days = z.coerce.number().int().min(1).max(30).default(7).parse(c.req.query("days"));
+  return ok(c, await getTokenUsage(c.env, c.req.param("tokenId"), days));
 });
 app.delete("/api/v1/tokens/:tokenId", async (c) => {
   await revokeToken(c.env, c.get("principal"), c.req.param("tokenId"));

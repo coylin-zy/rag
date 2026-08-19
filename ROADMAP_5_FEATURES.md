@@ -1,6 +1,6 @@
 # Knowledge Core 五项增强实施计划
 
-> 状态：规划完成；功能一已在当前分支本地实现并进入验收，尚未部署<br>
+> 状态：功能一、功能二已在当前分支本地实现并通过对应验收，尚未部署或推送生产<br>
 > 规划基线：`ca26f69 feat: add trusted agent knowledge admin token`<br>
 > 目标场景：个人 Markdown AI 大脑，Codex 等 Agent 通过 MCP 使用，Cloudflare Workers + D1 + R2 + Vectorize + Queues 承载后端
 
@@ -50,7 +50,7 @@ flowchart LR
 | 迁移 | 主要变化 | 兼容原则 |
 | --- | --- | --- |
 | `0005_recycle_bin.sql` | 知识库 `trashed_at/trashed_by/trash_reason/purge_after`；文档 `deleted_from_status/deleted_by/delete_reason`；回收站索引 | 复用已有 `notes.deleted_at`，先加可空列，再改变查询和删除语义 |
-| `0006_token_controls.sql` | Token 限额、最近 IP 网段；按日用量、速率窗口和 Agent 写操作幂等回执表 | 现有普通 Token 使用安全默认值 |
+| `0006_token_risk_controls.sql` | Token 限额、最近 IP 网段；按日用量、速率窗口和 Agent 写操作幂等回执表 | 现有普通 Token 使用安全默认值 |
 | `0007_note_provenance.sql` | 来源 JSON、观察时间、人工复核时间、下次复核时间、替代关系、外部路径和同步基线哈希 | 旧文档全部允许字段为空 |
 | `0008_transfer_jobs.sql` | 导入/导出任务、文件项、冲突、执行状态、备份 manifest 哈希与本地验证回执 | 传输任务与正式知识写入解耦，不导出登录或 Token 凭证 |
 
@@ -139,6 +139,8 @@ MCP：
 - 对照 D1 Time Travel 文档记录生产恢复手册，但不把整库 Time Travel 当作日常撤销按钮。
 
 ## 6. 功能二：最高权限 Token 风控
+
+> 当前状态：已在本分支完成 Worker、D1 migration、MCP、网页 Token 管理和本地测试；未部署。部署前仍需执行完整构建、E2E、Wrangler dry-run，并清点生产中的永久最高权限 Token。
 
 ### 6.1 签发策略
 
