@@ -7,6 +7,7 @@ import { app as baseApp } from "./apiProvenance";
 import type { AppVariables, Env } from "./env";
 import { adminAuth } from "./lib/auth";
 import { ApiError, errorResponse } from "./lib/errors";
+import { createExportJob, readExportManifest, readExportObject, verifyBackupReport } from "./services/exportJobs";
 import { applyImportJob, cancelImportJob } from "./services/importApply";
 import { createImportJob, getImportJob, planImportJob, uploadImportItem } from "./services/importJobs";
 
@@ -50,6 +51,15 @@ const applySchema = z.object({
   })).max(500).default([]),
 });
 
+const exportSchema = z.object({
+  kind: z.enum(["portable", "backup"]),
+});
+
+const verifyBackupSchema = z.object({
+  manifestHash: z.string().regex(/^[a-f0-9]{64}$/i),
+  reportHash: z.string().regex(/^[a-f0-9]{64}$/i),
+});
+
 export const app = new Hono<AppEnv>();
 app.onError((error, c) => errorResponse(c, error));
 
@@ -90,6 +100,43 @@ app.use("/api/v1/import-jobs/:jobId/cancel", requestMetadata, productionOrigin, 
 app.post("/api/v1/import-jobs/:jobId/cancel", async (c) => {
   const jobId = z.string().uuid().parse(c.req.param("jobId"));
   return ok(c, await cancelImportJob(c.env, c.get("principal"), jobId));
+});
+
+app.use("/api/v1/collections/:collectionId/export-jobs", requestMetadata, productionOrigin, adminAuth());
+app.post("/api/v1/collections/:collectionId/export-jobs", async (c) => {
+  const collectionId = z.string().uuid().parse(c.req.param("collectionId"));
+  const input = exportSchema.parse(await c.req.json());
+  return ok(c, await createExportJob(c.env, c.get("principal"), collectionId, input.kind), 201);
+});
+
+app.use("/api/v1/export-jobs/:jobId/manifest", requestMetadata, adminAuth());
+app.get("/api/v1/export-jobs/:jobId/manifest", async (c) => {
+  const jobId = z.string().uuid().parse(c.req.param("jobId"));
+  return ok(c, await readExportManifest(c.env, c.get("principal"), jobId));
+});
+
+app.use("/api/v1/export-jobs/:jobId/objects/:objectId", requestMetadata, adminAuth());
+app.get("/api/v1/export-jobs/:jobId/objects/:objectId", async (c) => {
+  const jobId = z.string().uuid().parse(c.req.param("jobId"));
+  const objectId = z.string().uuid().parse(c.req.param("objectId"));
+  const result = await readExportObject(c.env, c.get("principal"), jobId, objectId);
+  c.header("cache-control", "no-store");
+  c.header("x-content-sha256", result.row.sha256);
+  c.header("x-export-logical-path", encodeURIComponent(result.row.logicalPath));
+  c.header(
+    "content-type",
+    result.row.objectKind.endsWith("markdown")
+      ? "text/markdown; charset=utf-8"
+      : "application/json; charset=utf-8",
+  );
+  return c.body(result.bytes);
+});
+
+app.use("/api/v1/export-jobs/:jobId/verify", requestMetadata, productionOrigin, adminAuth());
+app.post("/api/v1/export-jobs/:jobId/verify", async (c) => {
+  const jobId = z.string().uuid().parse(c.req.param("jobId"));
+  const input = verifyBackupSchema.parse(await c.req.json());
+  return ok(c, await verifyBackupReport(c.env, c.get("principal"), jobId, input));
 });
 
 app.route("/", baseApp);
