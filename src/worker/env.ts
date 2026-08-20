@@ -6,6 +6,7 @@ export interface Env {
   NOTES: R2Bucket;
   VECTOR_INDEX: VectorizeIndex;
   INDEX_QUEUE: Queue<IndexQueueMessage>;
+  TRANSFER_QUEUE: Queue<TransferQueueMessage>;
   ENVIRONMENT: string;
   DEV_AUTH_BYPASS: string;
   BOOTSTRAP_ADMIN_EMAILS: string;
@@ -31,6 +32,13 @@ export type IndexQueueMessage =
 export type NewIndexQueueMessage =
   | { type: "index"; noteId: string; version: number }
   | { type: "delete"; noteId: string };
+
+export type TransferQueueMessage = {
+  type: "import_apply";
+  jobId: string;
+  itemId: string;
+  planVersion: number;
+};
 
 export interface AppVariables {
   requestId: string;
