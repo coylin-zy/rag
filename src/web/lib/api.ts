@@ -11,10 +11,30 @@ export class ApiClientError extends Error {
   }
 }
 
+const noteEtags = new Map<string, string>();
+
+function noteIdFromDetailPath(path: string): string | null {
+  return path.match(/^\/api\/v1\/notes\/([^/?]+)$/)?.[1] ?? null;
+}
+
+function noteIdFromRestorePath(path: string): string | null {
+  return path.match(/^\/api\/v1\/notes\/([^/?]+)\/restore$/)?.[1] ?? null;
+}
+
+function noteIdFromVersionedMutationPath(path: string): string | null {
+  return noteIdFromDetailPath(path) ?? noteIdFromRestorePath(path);
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
   if (import.meta.env.DEV) headers.set("x-dev-user-email", "admin@example.com");
+
+  const restoreNoteId = noteIdFromRestorePath(path);
+  if (restoreNoteId && !headers.has("if-match")) {
+    const observedEtag = noteEtags.get(restoreNoteId);
+    if (observedEtag) headers.set("if-match", observedEtag);
+  }
 
   const response = await fetch(path, { credentials: "same-origin", ...init, headers });
   const payload = (await response.json().catch(() => null)) as ApiEnvelope<T> | ApiErrorEnvelope | null;
@@ -23,6 +43,11 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiClientError(response.status, error?.code ?? "request_failed", error?.message ?? `请求失败 (${response.status})`, error?.details);
   }
   if (!payload || !("data" in payload)) throw new ApiClientError(502, "invalid_response", "服务返回了无法识别的数据");
+
+  const noteId = noteIdFromVersionedMutationPath(path);
+  const etag = response.headers.get("etag");
+  if (noteId && etag) noteEtags.set(noteId, etag);
+  if (noteIdFromDetailPath(path) && init.method === "DELETE") noteEtags.delete(noteIdFromDetailPath(path)!);
   return payload.data;
 }
 
