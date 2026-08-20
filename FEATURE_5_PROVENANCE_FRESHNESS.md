@@ -199,3 +199,7 @@ pnpm build
 并应执行 Wrangler dry-run、本地/预发布 D1 migration 和关键 E2E。
 
 本阶段没有执行生产 migration、Worker deploy、香港服务器前端更新或生产数据修改。
+
+## Git checkpoint
+
+2026-08-20：来源与知识时效阶段代码、并发加固、协议兼容调整和测试用例均已逐步提交到 GitHub。本记录作为进入 Markdown 批量导入/导出阶段前的云端 checkpoint；当前状态仍为“测试用例已写、未实际运行 GitHub CI、未部署生产”。
