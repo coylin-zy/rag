@@ -2,13 +2,12 @@ import type { SourceMetadata } from "@shared/contracts";
 import type { AdminPrincipal, Env, McpPrincipal } from "@worker/env";
 
 import { createDb } from "../db/client";
-import { noteVersions, notes } from "../db/schema";
+import { noteVersions } from "../db/schema";
 import { requireCollectionRole } from "../lib/auth";
 import { writeAudit } from "../lib/audit";
 import { sha256 } from "../lib/crypto";
 import { ApiError } from "../lib/errors";
 import { canonicalizeMarkdown, parseMarkdownDocument, serializeMarkdownDocument } from "../lib/markdown";
-import { requireKnowledgeRole } from "../lib/principal";
 import { freshnessWarnings } from "../lib/provenance";
 import { nowIso, parseJson } from "../lib/utils";
 import { enqueueJob } from "./jobs";
@@ -112,6 +111,28 @@ async function getCurrentVersionMarkdown(env: Env, noteId: string, version: numb
   return object.text();
 }
 
+async function removeUnreferencedReviewObject(
+  env: Env,
+  input: { key: string; created: boolean; noteId: string; version: number; contentHash: string },
+): Promise<void> {
+  if (!input.created) return;
+  const reference = await env.DB.prepare(`
+    SELECT n.version AS currentVersion, n.content_hash AS currentHash, v.content_hash AS versionHash
+    FROM notes n
+    LEFT JOIN note_versions v ON v.note_id = n.id AND v.version = ?
+    WHERE n.id = ? LIMIT 1
+  `).bind(input.version, input.noteId).first<{
+    currentVersion: number;
+    currentHash: string;
+    versionHash: string | null;
+  }>();
+  if (
+    reference?.versionHash === input.contentHash
+    || (reference?.currentVersion === input.version && reference.currentHash === input.contentHash)
+  ) return;
+  await env.NOTES.delete(input.key);
+}
+
 export async function reviewNote(
   env: Env,
   principal: AdminPrincipal,
@@ -153,43 +174,56 @@ export async function reviewNote(
       throw new ApiError(409, "version_conflict", "目标复核版本已被其他操作占用");
     }
   }
-
+  const versionObject = { key: r2Key, created: Boolean(written), noteId, version, contentHash };
   const updatedAt = nowIso();
-  const updated = await env.DB.prepare(`
-    UPDATE notes
-    SET version = ?, content_hash = ?, reviewed_at = ?, review_after = ?, updated_at = ?, updated_by = ?
-    WHERE id = ? AND version = ? AND status != 'deleted'
-  `).bind(
-    version,
-    contentHash,
-    reviewedAt,
-    nextReviewAfter,
-    updatedAt,
-    principal.email,
-    noteId,
-    expectedVersion,
-  ).run();
-  if (Number(updated.meta.changes) !== 1) {
-    const referenced = await env.DB.prepare("SELECT 1 AS found FROM note_versions WHERE note_id = ? AND version = ? LIMIT 1")
-      .bind(noteId, version)
-      .first<{ found: number }>();
-    if (!referenced) await env.NOTES.delete(r2Key).catch(() => undefined);
-    throw new ApiError(409, "version_conflict", "文档在复核期间被其他操作更新，请刷新后重试");
-  }
 
   try {
-    await db.insert(noteVersions).values({
-      noteId,
-      version,
-      r2Key,
-      contentHash,
-      title: document.frontmatter.title,
-      tagsJson: JSON.stringify(document.frontmatter.tags),
-      createdAt: updatedAt,
-      createdBy: principal.email,
-    });
-  } catch {
-    throw new ApiError(409, "version_conflict", "复核版本历史写入冲突");
+    const [updateResult, insertResult] = await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE notes
+        SET version = ?, content_hash = ?, reviewed_at = ?, review_after = ?, updated_at = ?, updated_by = ?
+        WHERE id = ? AND version = ? AND status != 'deleted'
+      `).bind(
+        version,
+        contentHash,
+        reviewedAt,
+        nextReviewAfter,
+        updatedAt,
+        principal.email,
+        noteId,
+        expectedVersion,
+      ),
+      env.DB.prepare(`
+        INSERT INTO note_versions (note_id, version, r2_key, content_hash, title, tags_json, created_at, created_by)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM notes
+          WHERE id = ? AND version = ? AND content_hash = ? AND updated_at = ? AND updated_by = ? AND status != 'deleted'
+        )
+      `).bind(
+        noteId,
+        version,
+        r2Key,
+        contentHash,
+        document.frontmatter.title,
+        JSON.stringify(document.frontmatter.tags),
+        updatedAt,
+        principal.email,
+        noteId,
+        version,
+        contentHash,
+        updatedAt,
+        principal.email,
+      ),
+    ]);
+    if (Number(updateResult.meta.changes) !== 1 || Number(insertResult.meta.changes) !== 1) {
+      await removeUnreferencedReviewObject(env, versionObject);
+      throw new ApiError(409, "version_conflict", "文档在复核期间被更新或移入回收站，请刷新后重试");
+    }
+  } catch (error) {
+    await removeUnreferencedReviewObject(env, versionObject).catch(() => undefined);
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(409, "version_conflict", "复核版本历史写入冲突，请刷新后重试");
   }
 
   await env.NOTES.put(`notes/${note.collectionId}/${noteId}/current.md`, document.markdown, {
