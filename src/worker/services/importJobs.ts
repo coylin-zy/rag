@@ -39,7 +39,9 @@ interface ImportItemRow {
   byteSize: number;
   action: ImportAction | null;
   decision: "skip" | "overwrite" | "copy" | null;
+  decisionPath: string | null;
   status: string;
+  attempts: number;
   targetNoteId: string | null;
   expectedVersion: number | null;
   resultNoteId: string | null;
@@ -65,7 +67,8 @@ function jobSelect() {
 function itemSelect() {
   return `
     SELECT id, job_id AS jobId, relative_path AS relativePath, staged_r2_key AS stagedR2Key,
-           source_sha256 AS sourceSha256, byte_size AS byteSize, action, decision, status,
+           source_sha256 AS sourceSha256, byte_size AS byteSize, action, decision,
+           decision_path AS decisionPath, status, attempts,
            target_note_id AS targetNoteId, expected_version AS expectedVersion,
            result_note_id AS resultNoteId, result_version AS resultVersion,
            error_code AS errorCode, error_message AS errorMessage,
@@ -214,20 +217,35 @@ async function classifyItem(env: Env, job: ImportJobRow, item: ImportItemRow) {
     const markdown = await object.text();
     const stagedHash = await sha256(markdown.replace(/\r\n/g, "\n"));
     if (stagedHash !== item.sourceSha256) throw new ApiError(422, "import_stage_hash_mismatch", "导入暂存文件哈希不一致");
-    await validateImportMarkdown({ relativePath: item.relativePath, markdown, clientSha256: item.sourceSha256 });
+    const validated = await validateImportMarkdown({
+      relativePath: item.relativePath,
+      markdown,
+      clientSha256: item.sourceSha256,
+    });
 
-    const target = await env.DB.prepare(`
-      SELECT id, status, version, content_hash AS contentHash, sync_base_hash AS syncBaseHash
-      FROM notes
-      WHERE collection_id = ? AND external_path = ?
-      LIMIT 1
-    `).bind(job.collectionId, item.relativePath).first<{
+    type Target = {
       id: string;
       status: string;
       version: number;
       contentHash: string;
       syncBaseHash: string | null;
-    }>();
+    };
+    let target = await env.DB.prepare(`
+      SELECT id, status, version, content_hash AS contentHash, sync_base_hash AS syncBaseHash
+      FROM notes
+      WHERE collection_id = ? AND external_path = ?
+      LIMIT 1
+    `).bind(job.collectionId, item.relativePath).first<Target>();
+
+    const exportedId = validated.document.frontmatter.id;
+    if (!target && exportedId && item.relativePath === `${exportedId}.md`) {
+      target = await env.DB.prepare(`
+        SELECT id, status, version, content_hash AS contentHash, sync_base_hash AS syncBaseHash
+        FROM notes
+        WHERE id = ? AND collection_id = ? AND external_path IS NULL
+        LIMIT 1
+      `).bind(exportedId, job.collectionId).first<Target>();
+    }
 
     let action: ImportAction;
     if (!target) action = "create";
