@@ -1,4 +1,4 @@
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 
 import type { ApiEnvelope } from "@shared/contracts";
@@ -26,19 +26,19 @@ function expectedVersion(header: string | undefined): number {
   return value;
 }
 
-export const app = new Hono<AppEnv>();
-
-app.use("*", async (c, next) => {
+const requestMetadata: MiddlewareHandler<AppEnv> = async (c, next) => {
   const requestId = crypto.randomUUID();
   c.set("requestId", requestId);
   await next();
   c.header("x-request-id", requestId);
   c.header("x-content-type-options", "nosniff");
   c.header("referrer-policy", "same-origin");
-});
+};
 
+export const app = new Hono<AppEnv>();
 app.onError((error, c) => errorResponse(c, error));
 
+app.use("/mcp", requestMetadata);
 app.all("/mcp", async (c) => {
   const principal = await authenticateMcpToken(
     c.env,
@@ -48,6 +48,7 @@ app.all("/mcp", async (c) => {
   return handleVersionAwareMcpRequest(c.req.raw, c.env, principal);
 });
 
+app.use("/api/v1/notes/:noteId/versions/:version", requestMetadata);
 app.use("/api/v1/notes/:noteId/versions/:version", adminAuth());
 app.get("/api/v1/notes/:noteId/versions/:version", async (c) => {
   const version = z.coerce.number().int().positive().parse(c.req.param("version"));
@@ -57,6 +58,7 @@ app.get("/api/v1/notes/:noteId/versions/:version", async (c) => {
   return ok(c, result);
 });
 
+app.use("/api/v1/notes/:noteId/restore", requestMetadata);
 app.use("/api/v1/notes/:noteId/restore", async (c, next) => {
   if (c.env.ENVIRONMENT === "production" && !["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
     if (!c.env.ADMIN_ORIGIN || c.req.header("origin") !== c.env.ADMIN_ORIGIN) {
