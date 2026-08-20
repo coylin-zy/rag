@@ -72,8 +72,10 @@ describe("stateless MCP contract", () => {
       "list_collections",
       "list_recent_changes",
       "propose_memory",
+      "list_note_versions",
+      "read_note_version",
     ]));
-    expect(names).toHaveLength(6);
+    expect(names).toHaveLength(8);
     const listNotesSchema = tools.body.result?.tools?.find((tool) => tool.name === "list_notes")?.inputSchema?.properties;
     expect(listNotesSchema).toMatchObject({ tags: expect.any(Object), updated_after: expect.any(Object) });
 
@@ -165,8 +167,11 @@ describe("stateless MCP contract", () => {
       "update_note",
       "delete_note",
       "restore_note",
+      "list_note_versions",
+      "read_note_version",
+      "restore_note_version",
     ]));
-    expect(names).toHaveLength(15);
+    expect(names).toHaveLength(18);
 
     const createdCollectionResponse = await rpc(token.token, "tools/call", {
       name: "create_collection",
