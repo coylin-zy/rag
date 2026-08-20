@@ -226,3 +226,86 @@ export const auditLogs = sqliteTable(
   },
   (table) => [index("idx_audit_created").on(table.createdAt)],
 );
+
+export const transferJobs = sqliteTable(
+  "transfer_jobs",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind", { enum: ["import", "export_portable", "export_backup"] }).notNull(),
+    collectionId: text("collection_id").notNull(),
+    status: text("status", { enum: ["draft", "planning", "planned", "queued", "processing", "completed", "failed", "cancelled"] }).notNull(),
+    planVersion: integer("plan_version").notNull().default(0),
+    totalItems: integer("total_items").notNull().default(0),
+    completedItems: integer("completed_items").notNull().default(0),
+    failedItems: integer("failed_items").notNull().default(0),
+    conflictItems: integer("conflict_items").notNull().default(0),
+    invalidItems: integer("invalid_items").notNull().default(0),
+    totalBytes: integer("total_bytes").notNull().default(0),
+    manifestHash: text("manifest_hash"),
+    verifiedAt: text("verified_at"),
+    verifiedBy: text("verified_by"),
+    verificationHash: text("verification_hash"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    createdBy: text("created_by").notNull(),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    cancelledAt: text("cancelled_at"),
+    lastError: text("last_error"),
+  },
+  (table) => [
+    index("idx_transfer_jobs_collection_updated").on(table.collectionId, table.updatedAt),
+    index("idx_transfer_jobs_status_updated").on(table.status, table.updatedAt),
+  ],
+);
+
+export const transferItems = sqliteTable(
+  "transfer_items",
+  {
+    id: text("id").primaryKey(),
+    jobId: text("job_id").notNull(),
+    relativePath: text("relative_path").notNull(),
+    stagedR2Key: text("staged_r2_key"),
+    sourceSha256: text("source_sha256"),
+    byteSize: integer("byte_size").notNull().default(0),
+    action: text("action", { enum: ["create", "update", "unchanged", "conflict", "conflict_deleted", "invalid"] }),
+    decision: text("decision", { enum: ["skip", "overwrite", "copy"] }),
+    status: text("status", { enum: ["uploaded", "planned", "queued", "processing", "completed", "failed", "cancelled"] }).notNull().default("uploaded"),
+    targetNoteId: text("target_note_id"),
+    expectedVersion: integer("expected_version"),
+    resultNoteId: text("result_note_id"),
+    resultVersion: integer("result_version"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    operationKey: text("operation_key"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    completedAt: text("completed_at"),
+  },
+  (table) => [
+    uniqueIndex("idx_transfer_items_job_path").on(table.jobId, table.relativePath),
+    uniqueIndex("idx_transfer_items_job_operation").on(table.jobId, table.operationKey),
+    index("idx_transfer_items_job_status").on(table.jobId, table.status, table.id),
+    index("idx_transfer_items_job_action").on(table.jobId, table.action, table.id),
+  ],
+);
+
+export const transferExportObjects = sqliteTable(
+  "transfer_export_objects",
+  {
+    id: text("id").primaryKey(),
+    jobId: text("job_id").notNull(),
+    logicalPath: text("logical_path").notNull(),
+    objectKind: text("object_kind", { enum: ["current_markdown", "history_markdown", "collection_metadata", "note_metadata", "version_metadata"] }).notNull(),
+    noteId: text("note_id"),
+    noteVersion: integer("note_version"),
+    r2Key: text("r2_key"),
+    sha256: text("sha256").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_transfer_export_objects_job_path").on(table.jobId, table.logicalPath),
+    index("idx_transfer_export_objects_job").on(table.jobId, table.id),
+  ],
+);
