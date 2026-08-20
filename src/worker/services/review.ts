@@ -111,10 +111,27 @@ async function getCurrentVersionMarkdown(env: Env, noteId: string, version: numb
   return object.text();
 }
 
-async function removeUnreferencedReviewObject(
+async function cleanupFailedReviewVersion(
   env: Env,
-  input: { key: string; created: boolean; noteId: string; version: number; contentHash: string },
+  input: { key: string; created: boolean; noteId: string; version: number; contentHash: string; inserted: boolean },
 ): Promise<void> {
+  if (input.inserted) {
+    await env.DB.prepare(`
+      DELETE FROM note_versions
+      WHERE note_id = ? AND version = ? AND content_hash = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM notes
+          WHERE id = ? AND version = ? AND content_hash = ?
+        )
+    `).bind(
+      input.noteId,
+      input.version,
+      input.contentHash,
+      input.noteId,
+      input.version,
+      input.contentHash,
+    ).run();
+  }
   if (!input.created) return;
   const reference = await env.DB.prepare(`
     SELECT n.version AS currentVersion, n.content_hash AS currentHash, v.content_hash AS versionHash
@@ -174,32 +191,19 @@ export async function reviewNote(
       throw new ApiError(409, "version_conflict", "目标复核版本已被其他操作占用");
     }
   }
-  const versionObject = { key: r2Key, created: Boolean(written), noteId, version, contentHash };
   const updatedAt = nowIso();
+  let inserted = false;
 
   try {
-    const [updateResult, insertResult] = await env.DB.batch([
-      env.DB.prepare(`
-        UPDATE notes
-        SET version = ?, content_hash = ?, reviewed_at = ?, review_after = ?, updated_at = ?, updated_by = ?
-        WHERE id = ? AND version = ? AND status != 'deleted'
-      `).bind(
-        version,
-        contentHash,
-        reviewedAt,
-        nextReviewAfter,
-        updatedAt,
-        principal.email,
-        noteId,
-        expectedVersion,
-      ),
+    const [insertResult, updateResult] = await env.DB.batch([
       env.DB.prepare(`
         INSERT INTO note_versions (note_id, version, r2_key, content_hash, title, tags_json, created_at, created_by)
         SELECT ?, ?, ?, ?, ?, ?, ?, ?
         WHERE EXISTS (
           SELECT 1 FROM notes
-          WHERE id = ? AND version = ? AND content_hash = ? AND updated_at = ? AND updated_by = ? AND status != 'deleted'
+          WHERE id = ? AND version = ? AND status != 'deleted'
         )
+        ON CONFLICT(note_id, version) DO NOTHING
       `).bind(
         noteId,
         version,
@@ -210,18 +214,51 @@ export async function reviewNote(
         updatedAt,
         principal.email,
         noteId,
+        expectedVersion,
+      ),
+      env.DB.prepare(`
+        UPDATE notes
+        SET version = ?, content_hash = ?, reviewed_at = ?, review_after = ?, updated_at = ?, updated_by = ?
+        WHERE id = ? AND version = ? AND status != 'deleted'
+          AND EXISTS (
+            SELECT 1 FROM note_versions
+            WHERE note_id = ? AND version = ? AND content_hash = ?
+          )
+      `).bind(
         version,
         contentHash,
+        reviewedAt,
+        nextReviewAfter,
         updatedAt,
         principal.email,
+        noteId,
+        expectedVersion,
+        noteId,
+        version,
+        contentHash,
       ),
     ]);
-    if (Number(updateResult.meta.changes) !== 1 || Number(insertResult.meta.changes) !== 1) {
-      await removeUnreferencedReviewObject(env, versionObject);
+    inserted = Number(insertResult.meta.changes) === 1;
+    if (Number(updateResult.meta.changes) !== 1) {
+      await cleanupFailedReviewVersion(env, {
+        key: r2Key,
+        created: Boolean(written),
+        noteId,
+        version,
+        contentHash,
+        inserted,
+      });
       throw new ApiError(409, "version_conflict", "文档在复核期间被更新或移入回收站，请刷新后重试");
     }
   } catch (error) {
-    await removeUnreferencedReviewObject(env, versionObject).catch(() => undefined);
+    await cleanupFailedReviewVersion(env, {
+      key: r2Key,
+      created: Boolean(written),
+      noteId,
+      version,
+      contentHash,
+      inserted,
+    }).catch(() => undefined);
     if (error instanceof ApiError) throw error;
     throw new ApiError(409, "version_conflict", "复核版本历史写入冲突，请刷新后重试");
   }
