@@ -4,6 +4,7 @@ import type { Env, McpPrincipal } from "./env";
 import { ApiError } from "./lib/errors";
 import { isKnowledgeAdmin } from "./lib/principal";
 import { handleVersionAwareMcpRequest } from "./mcpVersioning";
+import { readNoteForCollections, readNoteForMcpAdmin } from "./services/notes";
 import { listReviewDueForMcp } from "./services/review";
 import { recordAdminFailure, recordAdminUsage } from "./services/tokenRisk";
 
@@ -94,6 +95,31 @@ async function mergeToolList(response: Response): Promise<Response> {
   return new Response(JSON.stringify(payload), { status: response.status, headers });
 }
 
+async function readFreshnessAwareResource(
+  env: Env,
+  principal: McpPrincipal,
+  uri: string,
+) {
+  const match = uri.match(/^kb:\/\/collections\/([0-9a-f-]{36})\/notes\/([0-9a-f-]{36})$/i);
+  if (!match) throw new ApiError(404, "note_not_found", "文档不存在或无权访问");
+  const [, collectionId, noteId] = match;
+  const note = isKnowledgeAdmin(principal)
+    ? await readNoteForMcpAdmin(env, principal, noteId)
+    : await readNoteForCollections(env, principal.collectionIds, noteId);
+  if (note.collectionId !== collectionId) throw new ApiError(404, "note_not_found", "文档不存在或无权访问");
+
+  const warning = note.warnings?.includes("review_due")
+    ? `> [!WARNING]\n> Knowledge Core: review_due — this knowledge passed review_after ${note.reviewAfter ?? "unknown"}. Verify current facts before relying on it.\n\n`
+    : "";
+  return {
+    contents: [{
+      uri,
+      mimeType: "text/markdown",
+      text: `${warning}${note.markdown}`,
+    }],
+  };
+}
+
 export async function handleProvenanceAwareMcpRequest(request: Request, env: Env, principal: McpPrincipal): Promise<Response> {
   if (request.method !== "POST") return handleVersionAwareMcpRequest(request, env, principal);
   const body = await request.text();
@@ -111,6 +137,22 @@ export async function handleProvenanceAwareMcpRequest(request: Request, env: Env
   if (message.method === "tools/list") {
     return mergeToolList(await delegateWithBody(request, body, env, principal));
   }
+
+  if (message.method === "resources/read") {
+    try {
+      requireReadScope(principal);
+      const uri = z.string().parse(message.params?.uri);
+      const result = await readFreshnessAwareResource(env, principal, uri);
+      if (isKnowledgeAdmin(principal)) await recordAdminUsage(env, principal, "read");
+      return jsonRpcResponse(message.id, result);
+    } catch (error) {
+      if (error instanceof ZodError) return invalidParams(message.id, error);
+      if (isKnowledgeAdmin(principal)) await recordAdminFailure(env, principal).catch(() => undefined);
+      if (error instanceof ApiError) return jsonRpcResponse(message.id, toolError(error));
+      throw error;
+    }
+  }
+
   if (message.method !== "tools/call") {
     return delegateWithBody(request, body, env, principal);
   }
