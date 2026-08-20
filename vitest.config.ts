@@ -25,6 +25,7 @@ export default defineConfig(async () => {
           bindings: { TEST_MIGRATIONS: migrations },
           queueConsumers: {
             "knowledge-core-test-index": { maxBatchTimeout: 0.05 },
+            "knowledge-core-test-transfer": { maxBatchTimeout: 0.05 },
           },
         },
       }),
