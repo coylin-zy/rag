@@ -16,6 +16,7 @@ import { computed, nextTick, ref, watch } from "vue";
 import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
 
 import ModalDialog from "@web/components/ModalDialog.vue";
+import ProvenanceContextControl from "@web/components/ProvenanceContextControl.vue";
 import { ApiClientError } from "@web/lib/api";
 import { useAppStore } from "@web/stores/app";
 
@@ -101,6 +102,7 @@ watch(() => route.fullPath, async () => {
 
       <div class="product-rail__footer">
         <RouterLink class="rail-utility" to="/review-due" title="待复核知识" aria-label="待复核知识" data-testid="review-due-nav"><PhWarningCircle :size="21" /></RouterLink>
+        <ProvenanceContextControl />
         <div class="worker-indicator" :class="{ 'worker-indicator--offline': appStore.initializationError }" :title="appStore.initialized ? 'Cloudflare Worker 在线' : appStore.initializationError ? 'Cloudflare Worker 连接失败' : '正在连接 Cloudflare Worker'">
           <span aria-hidden="true" />{{ appStore.initialized ? '在线' : appStore.initializationError ? '连接失败' : '连接中' }}
         </div>
