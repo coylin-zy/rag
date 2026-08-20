@@ -8,7 +8,7 @@ import type { AppVariables, Env } from "./env";
 import { adminAuth, authenticateMcpToken } from "./lib/auth";
 import { ApiError, errorResponse } from "./lib/errors";
 import { handleVersionAwareMcpRequest } from "./mcpVersioning";
-import { readNoteVersion, restoreNoteVersion } from "./services/versionHistory";
+import { listNoteVersions, readNoteVersion, restoreNoteVersion } from "./services/versionHistory";
 
 type AppEnv = { Bindings: Env; Variables: AppVariables };
 
@@ -46,6 +46,13 @@ app.all("/mcp", async (c) => {
     c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for"),
   );
   return handleVersionAwareMcpRequest(c.req.raw, c.env, principal);
+});
+
+app.use("/api/v1/notes/:noteId/versions", requestMetadata);
+app.use("/api/v1/notes/:noteId/versions", adminAuth());
+app.get("/api/v1/notes/:noteId/versions", async (c) => {
+  c.header("cache-control", "no-store");
+  return ok(c, await listNoteVersions(c.env, c.get("principal"), c.req.param("noteId")));
 });
 
 app.use("/api/v1/notes/:noteId/versions/:version", requestMetadata);
