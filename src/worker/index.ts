@@ -1,4 +1,4 @@
-import { app } from "./apiProvenance";
+import { app } from "./apiTransfer";
 import type { Env, IndexQueueMessage } from "./env";
 import { handleIndexQueue } from "./services/indexer";
 import { recoverStaleJobs } from "./services/jobs";
