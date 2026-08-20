@@ -27,6 +27,25 @@ function provenanceValues(document: ReturnType<typeof canonicalizeMarkdown>) {
   };
 }
 
+async function canonicalImportedDocument(
+  env: Env,
+  collectionId: string,
+  noteId: string,
+  version: number,
+  reviewedAt: string | null,
+  markdown: string,
+) {
+  const normalizedInput = importedMarkdownWithoutManagedIdentity(markdown);
+  const document = canonicalizeMarkdown(normalizedInput, {
+    id: noteId,
+    version,
+    reviewedAt,
+    allowReviewedAtChange: true,
+  });
+  await assertSupersedesTargets(env, collectionId, noteId, document.frontmatter.supersedes);
+  return { document, contentHash: await sha256(document.markdown) };
+}
+
 async function writeVersionObject(
   env: Env,
   input: { collectionId: string; noteId: string; version: number; markdown: string; contentHash: string },
@@ -94,17 +113,46 @@ export async function createImportedNote(
   markdown: string,
 ) {
   await requireCollectionRole(env, principal, collectionId, "editor");
+
+  const existing = await env.DB.prepare(`
+    SELECT id, status, version, content_hash AS contentHash, reviewed_at AS reviewedAt,
+           sync_base_hash AS syncBaseHash
+    FROM notes WHERE collection_id = ? AND external_path = ? LIMIT 1
+  `).bind(collectionId, externalPath).first<{
+    id: string;
+    status: string;
+    version: number;
+    contentHash: string;
+    reviewedAt: string | null;
+    syncBaseHash: string | null;
+  }>();
+  if (existing) {
+    if (existing.status === "deleted") throw new ApiError(409, "import_create_conflict", "导入路径已被回收站文档占用");
+    const candidate = await canonicalImportedDocument(
+      env,
+      collectionId,
+      existing.id,
+      existing.version,
+      existing.reviewedAt,
+      markdown,
+    );
+    if (candidate.contentHash === existing.contentHash && existing.syncBaseHash === existing.contentHash) {
+      return {
+        id: existing.id,
+        collectionId,
+        version: existing.version,
+        contentHash: existing.contentHash,
+        externalPath,
+        indexJobId: null,
+        replayed: true,
+      };
+    }
+    throw new ApiError(409, "import_create_conflict", "导入路径已被其他内容占用");
+  }
+
   const id = crypto.randomUUID();
   const version = 1;
-  const normalizedInput = importedMarkdownWithoutManagedIdentity(markdown);
-  const document = canonicalizeMarkdown(normalizedInput, {
-    id,
-    version,
-    reviewedAt: null,
-    allowReviewedAtChange: true,
-  });
-  await assertSupersedesTargets(env, collectionId, id, document.frontmatter.supersedes);
-  const contentHash = await sha256(document.markdown);
+  const { document, contentHash } = await canonicalImportedDocument(env, collectionId, id, version, null, markdown);
   const provenance = provenanceValues(document);
   const now = nowIso();
   const versionObject = await writeVersionObject(env, {
@@ -156,7 +204,7 @@ export async function createImportedNote(
         principal.email,
       ),
     ]);
-  } catch (error) {
+  } catch {
     if (versionObject.created) await env.NOTES.delete(versionObject.key).catch(() => undefined);
     throw new ApiError(409, "import_create_conflict", "导入创建文档时目标路径或版本发生冲突");
   }
@@ -172,7 +220,7 @@ export async function createImportedNote(
     collectionIds: [collectionId],
     metadata: { version, externalPath, indexJobId },
   });
-  return { id, collectionId, version, contentHash, externalPath, indexJobId };
+  return { id, collectionId, version, contentHash, externalPath, indexJobId, replayed: false };
 }
 
 export async function updateImportedNote(
@@ -184,30 +232,54 @@ export async function updateImportedNote(
   markdown: string,
 ) {
   const current = await env.DB.prepare(`
-    SELECT id, collection_id AS collectionId, status, version, reviewed_at AS reviewedAt
+    SELECT id, collection_id AS collectionId, status, version, content_hash AS contentHash,
+           reviewed_at AS reviewedAt, sync_base_hash AS syncBaseHash
     FROM notes WHERE id = ? LIMIT 1
   `).bind(noteId).first<{
     id: string;
     collectionId: string;
     status: string;
     version: number;
+    contentHash: string;
     reviewedAt: string | null;
+    syncBaseHash: string | null;
   }>();
   if (!current) throw new ApiError(404, "note_not_found", "导入目标文档不存在");
   await requireCollectionRole(env, principal, current.collectionId, "editor");
   if (current.status === "deleted") throw new ApiError(409, "note_deleted", "回收站文档不能被导入任务直接覆盖");
+
+  if (current.version === expectedVersion + 1) {
+    const replay = await canonicalImportedDocument(
+      env,
+      current.collectionId,
+      noteId,
+      current.version,
+      current.reviewedAt,
+      markdown,
+    );
+    if (replay.contentHash === current.contentHash && current.syncBaseHash === current.contentHash) {
+      return {
+        id: noteId,
+        collectionId: current.collectionId,
+        version: current.version,
+        contentHash: current.contentHash,
+        externalPath,
+        indexJobId: null,
+        replayed: true,
+      };
+    }
+  }
   if (current.version !== expectedVersion) throw new ApiError(409, "version_conflict", "导入计划使用的文档版本已经过期");
 
   const version = expectedVersion + 1;
-  const normalizedInput = importedMarkdownWithoutManagedIdentity(markdown);
-  const document = canonicalizeMarkdown(normalizedInput, {
-    id: noteId,
+  const { document, contentHash } = await canonicalImportedDocument(
+    env,
+    current.collectionId,
+    noteId,
     version,
-    reviewedAt: current.reviewedAt,
-    allowReviewedAtChange: true,
-  });
-  await assertSupersedesTargets(env, current.collectionId, noteId, document.frontmatter.supersedes);
-  const contentHash = await sha256(document.markdown);
+    current.reviewedAt,
+    markdown,
+  );
   const provenance = provenanceValues(document);
   const now = nowIso();
   const versionObject = await writeVersionObject(env, {
@@ -292,5 +364,5 @@ export async function updateImportedNote(
     collectionIds: [current.collectionId],
     metadata: { previousVersion: expectedVersion, version, externalPath, indexJobId },
   });
-  return { id: noteId, collectionId: current.collectionId, version, contentHash, externalPath, indexJobId };
+  return { id: noteId, collectionId: current.collectionId, version, contentHash, externalPath, indexJobId, replayed: false };
 }
