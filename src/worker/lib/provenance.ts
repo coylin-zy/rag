@@ -4,6 +4,7 @@ import type { Env } from "@worker/env";
 import { ApiError } from "./errors";
 
 const ALLOWED_SOURCE_PROTOCOLS = new Set(["http:", "https:", "git:", "ssh:", "project:", "urn:"]);
+const SENSITIVE_QUERY_KEY = /(?:token|secret|password|passwd|signature|session|credential|api[_-]?key|auth)/i;
 
 const SECRET_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
   { name: "private_key", pattern: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i },
@@ -50,6 +51,13 @@ export function validateSourceMetadata(source: SourceMetadata | null | undefined
   }
   if (parsed.username || parsed.password) {
     throw new ApiError(422, "source_uri_credentials_forbidden", "source.uri 不能包含用户名、密码或其他 URL userinfo");
+  }
+  for (const [key, value] of parsed.searchParams) {
+    if (value && SENSITIVE_QUERY_KEY.test(key)) {
+      throw new ApiError(422, "source_uri_credentials_forbidden", "source.uri 不能包含 Token、密钥、签名或会话类查询参数", {
+        parameter: key,
+      });
+    }
   }
   if (source.type === "url" && parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new ApiError(422, "invalid_source_uri_protocol", "url 来源只允许 http/https URI");
