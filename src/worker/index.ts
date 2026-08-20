@@ -4,6 +4,7 @@ import { handleIndexQueue } from "./services/indexer";
 import { recoverStaleJobs } from "./services/jobs";
 import { cleanupTokenRiskData } from "./services/tokenRisk";
 import { handleTransferQueue } from "./services/transferQueue";
+import { recoverStaleTransfers } from "./services/transferRecovery";
 
 type WorkerQueueMessage = IndexQueueMessage | TransferQueueMessage;
 
@@ -17,6 +18,10 @@ export default {
     return handleIndexQueue(batch as MessageBatch<IndexQueueMessage>, env);
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(Promise.all([recoverStaleJobs(env), cleanupTokenRiskData(env)]));
+    ctx.waitUntil(Promise.all([
+      recoverStaleJobs(env),
+      cleanupTokenRiskData(env),
+      recoverStaleTransfers(env),
+    ]));
   },
 } satisfies ExportedHandler<Env, WorkerQueueMessage>;
