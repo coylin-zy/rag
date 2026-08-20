@@ -38,6 +38,21 @@ function jsonRpcResponse(id: JsonRpcRequest["id"], result: unknown) {
   });
 }
 
+function jsonRpcResourceError(id: JsonRpcRequest["id"], error: ApiError) {
+  return new Response(JSON.stringify({
+    jsonrpc: "2.0",
+    id: id ?? null,
+    error: {
+      code: -32002,
+      message: error.message,
+      data: { code: error.code, details: error.details },
+    },
+  }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 function toolResult(value: unknown) {
   return {
     content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
@@ -148,7 +163,7 @@ export async function handleProvenanceAwareMcpRequest(request: Request, env: Env
     } catch (error) {
       if (error instanceof ZodError) return invalidParams(message.id, error);
       if (isKnowledgeAdmin(principal)) await recordAdminFailure(env, principal).catch(() => undefined);
-      if (error instanceof ApiError) return jsonRpcResponse(message.id, toolError(error));
+      if (error instanceof ApiError) return jsonRpcResourceError(message.id, error);
       throw error;
     }
   }
