@@ -44,6 +44,7 @@ CREATE TABLE transfer_items (
   decision TEXT CHECK (decision IN ('skip', 'overwrite', 'copy')),
   decision_path TEXT,
   status TEXT NOT NULL DEFAULT 'uploaded' CHECK (status IN ('uploaded', 'planned', 'queued', 'processing', 'completed', 'failed', 'cancelled')),
+  attempts INTEGER NOT NULL DEFAULT 0,
   target_note_id TEXT,
   expected_version INTEGER,
   result_note_id TEXT,
