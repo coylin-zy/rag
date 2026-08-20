@@ -13,6 +13,7 @@ interface JsonRpcResponse {
     tools?: Array<{ name: string }>;
     structuredContent?: { result: unknown };
     isError?: boolean;
+    contents?: Array<{ uri: string; text: string }>;
   };
   error?: { code: number; message: string };
 }
@@ -37,7 +38,7 @@ async function rpc(token: string, method: string, params: Record<string, unknown
 }
 
 describe("MCP provenance and freshness", () => {
-  it("returns provenance and review_due warnings from list, read, search and list_review_due", async () => {
+  it("returns provenance and review_due warnings from every knowledge read path", async () => {
     const sent: IndexQueueMessage[] = [];
     vi.spyOn(env.INDEX_QUEUE, "send").mockImplementation(async (message) => { sent.push(message); return queueSendResponse(); });
     vi.spyOn(env.VECTOR_INDEX, "upsert").mockResolvedValue({ ids: [], count: 0 });
@@ -112,5 +113,10 @@ describe("MCP provenance and freshness", () => {
     expect(due.body.result?.structuredContent?.result).toEqual([
       expect.objectContaining({ id: created.body.data.id, warnings: ["review_due"] }),
     ]);
+
+    const uri = `kb://collections/${collection.id}/notes/${created.body.data.id}`;
+    const resource = await rpc(token.token, "resources/read", { uri }, 6);
+    expect(resource.body.result?.contents?.[0]?.text).toContain("Knowledge Core: review_due");
+    expect(resource.body.result?.contents?.[0]?.text).toContain("FRESHNESS-MARKER-733");
   });
 });
