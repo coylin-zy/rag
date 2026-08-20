@@ -5,8 +5,9 @@ import type { ApiEnvelope } from "@shared/contracts";
 
 import { app as baseApp } from "./api";
 import type { AppVariables, Env } from "./env";
-import { adminAuth } from "./lib/auth";
+import { adminAuth, authenticateMcpToken } from "./lib/auth";
 import { ApiError, errorResponse } from "./lib/errors";
+import { handleVersionAwareMcpRequest } from "./mcpVersioning";
 import { readNoteVersion, restoreNoteVersion } from "./services/versionHistory";
 
 type AppEnv = { Bindings: Env; Variables: AppVariables };
@@ -37,6 +38,15 @@ app.use("*", async (c, next) => {
 });
 
 app.onError((error, c) => errorResponse(c, error));
+
+app.all("/mcp", async (c) => {
+  const principal = await authenticateMcpToken(
+    c.env,
+    c.req.header("authorization"),
+    c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for"),
+  );
+  return handleVersionAwareMcpRequest(c.req.raw, c.env, principal);
+});
 
 app.use("/api/v1/notes/:noteId/versions/:version", adminAuth());
 app.get("/api/v1/notes/:noteId/versions/:version", async (c) => {
