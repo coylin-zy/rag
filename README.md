@@ -1,111 +1,234 @@
 # Knowledge Core
 
-面向 Codex 等 AI Agent 的 Markdown 知识库。系统负责知识管理、混合检索、原文读取、权限控制和记忆提案，不负责生成聊天答案。
+一个面向 Codex、Claude Code 等 AI Agent 的私有 Markdown 知识中枢。
 
-生产环境拆成两个入口：
+Knowledge Core 不是“上传文档后聊天”的成品 RAG 应用。它负责长期知识的存储、版本、权限、检索、审核与审计，并通过远程 MCP 把可靠上下文交给 Agent；回答和推理由 Agent 自己完成。
 
-- `https://rag.coylin.com`：香港服务器上的 Vue 3 管理后台，Nginx 将同源 `/api/*` 反代到 Worker。
-- `https://rag-api.coylin.com`：Cloudflare Worker，承载 `/api/v1/*`、`/mcp`、`/healthz`、Queue 索引消费者和 Cron 恢复任务。
+- 管理端：[rag.coylin.com](https://rag.coylin.com)
+- MCP / API：[rag-api.coylin.com](https://rag-api.coylin.com)
+- 正文格式：UTF-8 Markdown + YAML frontmatter
+- 后端：Cloudflare Workers、D1、R2、Vectorize、Queues、Workers AI
+- 前端：Vue 3、TypeScript、Vite，静态部署到香港服务器
 
-Markdown 正文和历史版本存放在私有 R2；D1 保存权限、元数据、FTS、任务、Token 哈希与审计；Vectorize 保存 1024 维余弦向量。
+> 当前代码状态（2026-08-20）：基础知识库已经上线；回收站与最高权限 Token 风控已在本仓库完成开发和本地验收，但尚未部署到生产。生产站点不应被视为已经包含这两项新能力。
 
-二期五项安全增强的详细规划见 [ROADMAP_5_FEATURES.md](./ROADMAP_5_FEATURES.md)。回收站与最高权限 Token 风控已经在当前分支完成本地实现与测试，仍未部署；版本 Diff、来源时效和批量导入导出尚未实现。
+## 为什么做这个项目
 
-> 上线状态（2026-07-14）：Worker 已部署到 `rag-api.coylin.com`；香港服务器上的 Vue/Nginx、Let's Encrypt HTTPS 和自动续期均已完成。`rag.coylin.com` 保持 DNS only，并使用站内登录页面保护管理后台。
+Agent 经常需要知道“我是谁、项目做到哪里、有哪些约束、过去做过什么决定”。把这些信息散落在聊天记录、Obsidian、代码仓库和临时文件中，会导致上下文难找、版本不明、来源不可追溯。
 
-## 系统要求
+Knowledge Core 将这些信息整理为可治理的 Markdown：
 
-- Node.js 22 或更高版本
+- 人通过网页创建、编辑、审核和恢复知识；
+- 普通 Agent 只能搜索、读取或提交待审核记忆；
+- 受信任 Agent 可以使用短期最高权限 Token 直接维护知识；
+- 每次写入都有版本锁、身份归因和审计记录；
+- RAG 是检索能力，MCP 是 Agent 的标准接入层。
+
+## 已实现能力
+
+| 能力 | 当前实现 |
+| --- | --- |
+| Markdown 管理 | 知识库、文档、标签、草稿/发布、预览和版本恢复 |
+| 混合检索 | D1 FTS5 + Vectorize + RRF，可选 OpenAI 兼容 Rerank |
+| MCP 读取 | 列知识库、列文档、读取全文、最近变更、混合搜索和 `kb://` Resource |
+| Agent 记忆 | 普通 Token 提交提案，管理员审核后才进入正式知识 |
+| Agent 直写 | `knowledge:admin` 可维护知识库和 Markdown，但不能管理账号、成员或 Token |
+| 可恢复删除 | 文档和知识库进入回收站，正常 API、搜索和 MCP 不再可见，可按并发保护恢复 |
+| Token 风控 | 最高权限 Token 强制过期、请求/写入限额、IP 网段审计、用量统计和紧急批量撤销 |
+| 幂等写入 | 最高权限 MCP 写操作使用 `operation_id`，安全处理断网重试和重复提交 |
+| 权限与审计 | Viewer / Editor / Admin、知识库范围 Token、乐观锁和不可变审计事件 |
+| 管理体验 | 站内登录、桌面和 375 px 移动端响应式界面、索引任务和失败重试 |
+
+## 架构
+
+```mermaid
+flowchart LR
+    Human["管理员 / 编辑者"] --> Web["rag.coylin.com<br/>Vue + Nginx"]
+    Agent["Codex / Agent"] --> MCP["rag-api.coylin.com/mcp"]
+    Web -->|"同源 /api + 服务器代理凭证"| Worker["Cloudflare Worker<br/>Hono + MCP SDK"]
+    MCP -->|"Bearer Token"| Worker
+    Worker --> D1["D1<br/>元数据 / 权限 / FTS / 审计"]
+    Worker --> R2["R2<br/>Markdown / 不可变历史 / 提案"]
+    Worker --> Queue["Queues<br/>异步索引"]
+    Queue --> AI["Workers AI<br/>BGE-M3"]
+    Queue --> Vectorize["Vectorize<br/>1024 维向量"]
+    Worker --> Vectorize
+```
+
+存储职责严格分开：
+
+- R2 是 Markdown 正文与历史版本的事实来源；
+- D1 保存元数据、权限、FTS、任务、Token 哈希、用量和审计；
+- Vectorize 保存语义向量；
+- Queue 将保存文档与耗时索引解耦；
+- R2、D1 和 Vectorize 均不提供绕过 Worker 权限检查的公共读取入口。
+
+## 目录结构
+
+```text
+src/
+  shared/                 # 前后端共享契约与 Markdown 规则
+  web/                    # Vue 管理端
+  worker/                 # Worker API、MCP、Queue、Cron 与服务层
+migrations/               # D1 migrations
+tests/
+  e2e/                    # Playwright 桌面/移动端流程
+  web/                    # Vue 组件与交互测试
+deploy/
+  nginx/                  # 裸机 Nginx 配置
+  server/                 # 香港服务器容器化部署模板
+```
+
+完整架构、边界和验收要求见 [PLAN.md](./PLAN.md)，五项安全增强见 [ROADMAP_5_FEATURES.md](./ROADMAP_5_FEATURES.md)。
+
+## 本地开发
+
+### 环境要求
+
+- Node.js 22+
 - pnpm 10
-- Cloudflare 账户和 Wrangler 登录状态
-- Cloudflare Workers AI 权限（默认使用 1024 维多语言 BGE-M3）
-- 可选：OpenAI 兼容 Rerank API
+- 可用的 Wrangler CLI
+- 首次运行 Playwright 时需要安装 Chromium
+
+### 启动
 
 ```powershell
 corepack enable
 pnpm install
-pnpm exec wrangler login
-```
-
-## 本地开发
-
-仓库已提供被 Git 忽略的 `.dev.vars`。本地模式使用 `admin@example.com` 作为开发身份；Embedding 配置留空时使用确定性伪向量，适合验证流程，不代表真实语义检索质量。
-
-```powershell
+Copy-Item .dev.vars.example .dev.vars
 pnpm db:migrate:local
 pnpm dev
 ```
 
-打开 [http://localhost:5173](http://localhost:5173)。Vite 会把 `/api`、`/mcp` 和 `/healthz` 代理到本地 Worker `8787` 端口；生产构建会通过 `.env.production` 在 Token 页面显示 `https://rag-api.coylin.com/mcp`。
+打开 [http://localhost:5173](http://localhost:5173)。开发配置默认启用 `DEV_AUTH_BYPASS`，仅供本机使用；生产环境必须关闭。
 
-Vectorize 当前不支持纯本地绑定。开发环境会继续完成 D1 FTS 流程并跳过不可用的本地向量调用；真实语义检索应在测试覆盖或生产 Vectorize 上验收。
+## Markdown 规范
 
-## 创建 Cloudflare 资源
+每篇文档都使用 YAML frontmatter：
 
-项目只创建一个长期生产 Worker，不创建独立 staging Worker。先登录正确账户，再执行：
+```markdown
+---
+title: Knowledge Core 项目状态
+tags:
+  - project
+  - knowledge-core
+status: published
+source: human
+---
+
+# 当前状态
+
+这里写正文。
+```
+
+主要约束：
+
+- `title` 必填，`status` 只能为 `draft` 或 `published`；
+- 标签最多 20 个，单篇 Markdown 最大 2 MiB；
+- `id`、`version` 和更新时间由服务端维护，不信任客户端伪造值；
+- 当前正文位于 `notes/{collectionId}/{noteId}/current.md`；
+- 历史正文位于 `versions/{collectionId}/{noteId}/{version}.md`。
+
+## 连接 Codex MCP
+
+创建 Token 时按最小权限选择 scope：
+
+- `knowledge:read`：搜索和读取正式知识；
+- `memory:propose`：提交待人工审核的记忆提案；
+- `knowledge:admin`：受信任 Agent 直接维护知识，必须使用短期 Token。
+
+先把明文 Token 放进本机环境变量：
 
 ```powershell
-pnpm exec wrangler d1 create knowledge-core-db
-pnpm exec wrangler r2 bucket create knowledge-core-notes
-pnpm exec wrangler vectorize create knowledge-core-v1 --dimensions=1024 --metric=cosine
-pnpm exec wrangler vectorize create-metadata-index knowledge-core-v1 --property-name=collection_id --type=string
-pnpm exec wrangler queues create knowledge-core-index
-pnpm exec wrangler queues create knowledge-core-index-dlq
+$env:KNOWLEDGE_CORE_MCP_TOKEN = "kcore_..."
 ```
 
-D1 创建命令会返回 `database_id`。把它替换到 `wrangler.jsonc` 的 `d1_databases[0].database_id`。其余资源名称已与配置一致。`collection_id` metadata index 必须在首次写入向量前创建，否则按知识库过滤的语义检索无法工作。当前生产 D1 ID 已写入配置，R2、Vectorize、metadata index、Queue 和 DLQ 也已于 2026-07-14 创建。
+在 Codex 配置中加入：
 
-R2 Bucket 不要开启公共访问。所有 Markdown 都应经过 Worker 的管理会话或 MCP Token 权限检查读取。
-
-## 配置 Embedding 与 Rerank
-
-生产环境默认通过原生 `AI` binding 使用 `@cf/baai/bge-m3`，无需单独配置 Embedding URL 或 API Key。模型输出为 1024 维，与 `knowledge-core-v1` Vectorize 索引一致。
-
-如需改用外部 OpenAI 兼容 Embedding，可在 `wrangler.jsonc` 中填写：
-
-```jsonc
-"EMBEDDING_BASE_URL": "https://your-provider.example/v1",
-"EMBEDDING_MODEL": "your-multilingual-1024-model",
-"RERANK_BASE_URL": "https://your-provider.example/v1",
-"RERANK_MODEL": "your-reranker"
+```toml
+[mcp_servers.knowledge_core]
+url = "https://rag-api.coylin.com/mcp"
+bearer_token_env_var = "KNOWLEDGE_CORE_MCP_TOKEN"
+startup_timeout_sec = 20
+tool_timeout_sec = 60
 ```
 
-外部服务密钥只通过 Worker Secrets 写入：
+基础工具：
+
+| 工具 | 用途 |
+| --- | --- |
+| `list_collections` | 列出 Token 可访问的知识库 |
+| `list_notes` | 按标签、更新时间和状态列文档 |
+| `read_note` | 读取当前完整 Markdown |
+| `search_knowledge` | 关键词与语义混合检索 |
+| `list_recent_changes` | 增量同步最近变更 |
+| `propose_memory` | 提交待审核记忆 |
+
+`knowledge:admin` 额外提供：
+
+- `create_collection`、`update_collection`、`trash_collection`、`delete_collection`、`restore_collection`；
+- `create_note`、`update_note`、`delete_note`、`restore_note`。
+
+所有最高权限写工具都要求 UUID 格式的 `operation_id`。同一个 Token 使用相同 `operation_id` 和相同输入重试时会回放原结果；改变输入复用该 ID 会被拒绝。文档也可通过 `kb://collections/{collectionId}/notes/{noteId}` Resource 读取。
+
+## 安全模型
+
+### 人类账号
+
+| 角色 | 权限 |
+| --- | --- |
+| Viewer | 查看知识和审计信息 |
+| Editor | 创建、编辑、发布和恢复文档 |
+| Admin | 管理知识库、成员、Token 和审核流程 |
+
+### 最高权限 Agent Token
+
+- 只有 bootstrap 管理员可以签发；
+- 必须设置 5 分钟到 7 天的有效期，界面默认 24 小时；
+- 默认限制为每分钟 60 次请求、每小时 30 次写入，可在签发时收紧或调整；
+- 只记录 IPv4 `/24` 或 IPv6 `/64` 网段，不保存完整客户端 IP；
+- 记录请求、写入、失败、限流和 IP 网段变化；
+- bootstrap 管理员可以一键撤销全部最高权限 Token；
+- 即使拥有 `knowledge:admin`，也不能管理人类账号、成员或其他 Token。
+
+Token 明文只在创建时返回一次，D1 只保存 SHA-256 哈希。生产密钥使用 `wrangler secret put` 写入，不要提交到 Git。
+
+## 测试与构建
 
 ```powershell
-pnpm exec wrangler secret put EMBEDDING_API_KEY
-pnpm exec wrangler secret put RERANK_API_KEY
+pnpm test             # Worker/API/MCP 集成测试
+pnpm test:web         # Vue 组件和交互测试
+pnpm typecheck        # Vue 与 Worker TypeScript 检查
+pnpm build            # 前端构建 + Worker dry-run
+pnpm test:e2e         # Playwright 桌面与移动端流程
+pnpm deploy:check     # 部署配置和生产安全检查
 ```
 
-Rerank 可不配置；不可用时系统保留 RRF 排序。只有启用外部 Embedding 时才需要 `EMBEDDING_API_KEY`。模型输出维度必须严格为 1024；更换模型或维度时应创建新 Vectorize 索引并全量重建，不能混用旧向量。
+当前本地验收基线：
 
-## 配置域名与管理员登录
+- Worker/API/MCP：46 / 46；
+- Web：16 / 16；
+- Playwright：桌面和移动端 2 / 2；
+- TypeScript、Vite 构建、Web 产物校验、Wrangler dry-run 和部署配置检查均通过。
 
-1. 在 Cloudflare DNS 中创建 DNS only 的 `A` 记录：`rag` 指向 `34.150.83.74`，不要开启代理。
-2. Nginx 直接提供 Let's Encrypt HTTPS，并把同源 `/api/*` 反代到 Worker。
-3. 管理员在站内登录页使用 `admin@coylin.com` 和初始密码登录；Worker 返回 12 小时的 HttpOnly、Secure、SameSite=Strict 会话 Cookie。
-4. Nginx 使用独立共享密钥向 Worker 证明管理请求来自受控服务器；该密钥分别存于服务器 root 配置和 Cloudflare Worker Secret。
+如果 Windows 用户目录包含非 ASCII 字符导致 `workerd` 无法启动，可临时把 `TEMP` 和 `TMP` 指向纯 ASCII 路径后再运行测试。
 
-```jsonc
-"BOOTSTRAP_ADMIN_EMAILS": "admin@coylin.com",
-"ADMIN_LOGIN_EMAIL": "admin@coylin.com",
-"ADMIN_ORIGIN": "https://rag.coylin.com"
-```
+## Cloudflare 资源
 
-生产配置必须保持：
+生产配置使用：
 
-```jsonc
-"ENVIRONMENT": "production",
-"DEV_AUTH_BYPASS": "false"
-```
+- Worker：`knowledge-core`
+- R2：`knowledge-core-notes`
+- D1：`knowledge-core-db`
+- Vectorize：`knowledge-core-v1`，metadata index 为 `collection_id`
+- Queue：`knowledge-core-index`
+- DLQ：`knowledge-core-index-dlq`
+- Workers AI：默认 `@cf/baai/bge-m3`
+- 可选 Rerank：OpenAI 兼容 `/v1/rerank` 端点
 
-`ADMIN_PROXY_SECRET`、`ADMIN_LOGIN_PASSWORD_HASH` 和 `ADMIN_SESSION_SECRET` 必须通过 `wrangler secret put` 写入，不能进入仓库。`rag-api.coylin.com` 是 Worker Custom Domain，不要把它指向香港服务器。`/mcp` 由独立 MCP Bearer Token 鉴权；`/healthz` 保持公开且只返回最小状态；`/api/v1/*` 同时验证 Nginx 代理凭证和管理会话。直接访问 API 会被拒绝。
+## 部署
 
-`rag.coylin.com` 必须保持 DNS only。生产环境所有非只读管理请求还会校验 `Origin: https://rag.coylin.com`，登录接口由 Nginx 按 IP 限速。
-
-## 部署 Worker
-
-先填写真实 D1 ID 与登录配置，再按需设置外部服务 Secrets。`pnpm deploy:check` 会拒绝占位配置：
+### Worker
 
 ```powershell
 pnpm deploy:check
@@ -116,141 +239,37 @@ pnpm db:migrate:remote
 pnpm deploy
 ```
 
-`pnpm deploy` 会把 Worker 绑定到 `rag-api.coylin.com`。部署后检查：
+`db:migrate:remote` 会修改生产 D1，执行前必须确认目标账号、数据库和备份策略。生产 Secret 至少包括：
 
-```powershell
-curl.exe https://rag-api.coylin.com/healthz
-```
+- `SESSION_SECRET`
+- `ADMIN_PASSWORD_HASH`
+- `SERVER_PROXY_TOKEN`
+- 可选的 `RERANK_API_KEY`
 
-响应只包含：
-
-```json
-{"status":"ok"}
-```
-
-然后通过网页创建第一个知识库、管理员成员和 MCP Token。Token 明文只显示一次；服务端只保存 SHA-256 哈希。
-
-## 部署 Vue 到香港服务器
-
-构建产物只包含静态文件，不需要在服务器运行 Node.js：
+### Vue / Nginx
 
 ```powershell
 pnpm build:web
-pnpm verify:production:web
-tar -czf rag-web.tar.gz -C dist .
-scp rag-web.tar.gz user@your-hk-server:/tmp/rag-web.tar.gz
+tar -czf knowledge-core-web.tar.gz -C dist .
 ```
 
-`pnpm build:web` 会在 Vite 构建后检查 `index.html`、Vue 挂载点以及全部入口 JS/CSS 是否真实存在且非空。部署完成后必须执行 `pnpm verify:production:web`；它会从公网入口重新提取全部引用资源，检查状态码和 Content-Type，并同时验证未登录会话与 Worker 健康状态。
+将静态产物上传到香港服务器后，由 Nginx 托管 `rag.coylin.com`，并把同源 `/api` 代理到 Worker。参考 [deploy/nginx](./deploy/nginx) 和 [deploy/server](./deploy/server)。DNS 记录保持 DNS only；Cloudflare Worker 自定义域负责 `rag-api.coylin.com`。
 
-在服务器上把压缩包解压到 `/var/www/rag.coylin.com/releases/<release>`，再将 `/var/www/rag.coylin.com/current` 原子切换到该目录。首发先使用 `rag.coylin.com.bootstrap.conf`，保持 DNS only 并签发证书：
+## 路线图
 
-```bash
-sudo certbot certonly --webroot -w /var/www/rag.coylin.com/current -d rag.coylin.com
-```
+- [x] 可恢复删除与回收站（代码完成，尚未部署）
+- [x] 最高权限 Token 风控（代码完成，尚未部署）
+- [ ] 版本差异与定点回滚
+- [ ] 来源、有效期与过期知识治理
+- [ ] 可恢复的批量导入与导出
 
-证书签发成功后安装 `rag.coylin.com.conf` 和 `rag-api-proxy-common.conf`，保持 DNS only，再执行：
+开源产品差距分析见 [OPEN_SOURCE_GAP.md](./OPEN_SOURCE_GAP.md)，产品调试与问题记录见 [tech.md](./tech.md)。
 
-```bash
-sudo nginx -t
-sudo systemctl reload nginx
-```
+## 项目边界
 
-Nginx 对 `/api/` 的 `proxy_pass` 不包含路径后缀，因此会原样保留 `/api/v1/*`，并注入服务器私密代理凭证。部署后访问 `https://rag.coylin.com/login`，确认站内登录、退出、文档操作和 Token 页面显示的 MCP 地址都正确。
-
-## 连接 Codex MCP
-
-在管理后台的“`MCP Token`”页面创建 Token。普通 Agent 使用 `knowledge:read`；需要提交记忆提案时再增加 `memory:propose`。只有 `BOOTSTRAP_ADMIN_EMAILS` 中的初始管理员能签发 `knowledge:admin`：它覆盖所有当前及未来知识库，并允许受信任 Agent 直接 CRUD 知识库与 Markdown，但不能管理 Token、成员或管理员账号。最高权限 Token 必须设置 5 分钟至 7 天的有效期，默认 24 小时，并带有每分钟请求、每小时写入限额；任务结束后立即撤销，bootstrap 管理员也可以在 Token 页面一键撤销全部最高权限 Token。
-
-先把 Token 放入运行 Codex 的环境变量：
-
-```powershell
-$env:KNOWLEDGE_CORE_MCP_TOKEN = "kcore_..."
-```
-
-在 Codex `config.toml` 中加入：
-
-```toml
-[mcp_servers.knowledge_core]
-url = "https://rag-api.coylin.com/mcp"
-bearer_token_env_var = "KNOWLEDGE_CORE_MCP_TOKEN"
-startup_timeout_sec = 20
-tool_timeout_sec = 60
-```
-
-普通 Token 连接后可发现以下 MCP Tools：
-
-- `list_collections`
-- `list_notes`
-- `list_recent_changes`
-- `search_knowledge`
-- `read_note`
-- `propose_memory`
-
-`knowledge:admin` Token 还会发现以下 9 个写工具：
-
-- `create_collection`
-- `update_collection`
-- `trash_collection`
-- `delete_collection`（`trash_collection` 的兼容别名，不会物理删除）
-- `restore_collection`
-- `create_note`
-- `update_note`
-- `delete_note`
-- `restore_note`
-
-文档资源 URI 为：
-
-```text
-kb://collections/{collectionId}/notes/{noteId}
-```
-
-普通 Token 对正式知识只读；`propose_memory` 只创建待审核提案，管理员批准后才生成正式 Markdown 并进入索引。最高权限 Token 可以直接写正式知识，但集合更新/回收必须携带最后读取的 `updated_at`，文档更新/回收必须携带当前 `version`，移入回收站还必须精确确认知识库名称或文档标题。最高权限 MCP 写工具都必须携带新的 UUID `operation_id`；网络重试使用相同 ID 会回放原结果，篡改输入会被拒绝。回收后普通 API、搜索、MCP Tool 与 Resource 都无法读取对象；恢复使用最后观察到的 `trashed_at/deleted_at` 防止并发覆盖。所有 Agent 写入都会记录 Token 身份和不可变审计事件。
-
-## 数据布局
-
-```text
-notes/{collectionId}/{noteId}/current.md
-versions/{collectionId}/{noteId}/{version}.md
-proposals/{collectionId}/{proposalId}.md
-```
-
-正式存储的 Markdown 始终包含服务端维护的 `id` 和 `version`。更新请求必须携带当前 ETag 作为 `If-Match`，并发冲突返回 `409`。
-
-## 检索与索引
-
-索引消费者执行：
-
-```text
-Markdown -> 标题/段落/代码块切分 -> 批量 Embedding
--> 写入新版 D1/FTS 与 Vectorize -> 切换 indexed_version -> 删除旧索引
-```
-
-检索执行：
-
-```text
-Vectorize 30 条 + D1 FTS5 30 条 -> RRF -> Rerank 前 20 条 -> 返回最多 8 条
-```
-
-Queue 最多自动重试 5 次，仍失败的消息进入 `knowledge-core-index-dlq`。管理后台可以查看失败任务并在授权范围内手动重试。
-
-## 验证命令
-
-```powershell
-pnpm test          # Worker 单元、D1/R2/Queue、MCP 合约测试
-pnpm typecheck     # Vue 与 Worker 严格 TypeScript
-pnpm build         # 前端构建和 Worker dry-run
-pnpm test:e2e      # Playwright 网页闭环
-```
-
-Windows 下 Cloudflare 测试运行时不能从中文路径启动。`pnpm test` 会自动建立无密钥 ASCII 临时副本、运行测试并清理。
-
-## 第一版边界
-
-- 仅接受 UTF-8 Markdown，单篇最大 2 MiB。
-- 不处理图片、附件、PDF、Office、网页抓取或 OCR。
-- 不提供聊天页面，也不调用模型生成答案。
-- 普通 Agent 不允许直接修改正式知识；仅显式签发的 `knowledge:admin` Token 可执行带版本锁、删除确认和审计的 CRUD。
-- 免费额度随 Cloudflare 套餐变化，上线前以账户 Dashboard 和官方 Limits 页面为准。
-
-完整架构、阶段和验收标准见 [PLAN.md](./PLAN.md)。与 GitHub 开源 Agent 知识库的对比和后续优先级见 [OPEN_SOURCE_GAP.md](./OPEN_SOURCE_GAP.md)。
+- 正文只存 Markdown，不演变为富文本或聊天内容仓库；
+- 不在产品内实现面向终端用户的 AI 对话；
+- 普通 Agent 默认不能直接改正式知识，只能提交提案；
+- 不自动接受 Agent 写入，最高权限必须由人主动、短期签发；
+- MCP 的“删除”始终可恢复，不提供物理删除工具；
+- Cloudflare 免费额度和产品限制会变化，正式扩容前应以最新官方文档为准。
