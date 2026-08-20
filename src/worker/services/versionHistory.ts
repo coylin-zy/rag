@@ -1,5 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 
+import type { SourceMetadata } from "@shared/contracts";
 import type { Env, KnowledgePrincipal } from "@worker/env";
 
 import { createDb } from "../db/client";
@@ -7,8 +8,9 @@ import { noteVersions, notes } from "../db/schema";
 import { writeAudit } from "../lib/audit";
 import { sha256 } from "../lib/crypto";
 import { ApiError } from "../lib/errors";
-import { canonicalizeMarkdown } from "../lib/markdown";
+import { canonicalizeMarkdown, parseMarkdownDocument, serializeMarkdownDocument } from "../lib/markdown";
 import { isKnowledgeAdmin, isMcpPrincipal, principalActor, requireKnowledgeRole } from "../lib/principal";
+import { assertSupersedesTargets, freshnessWarnings } from "../lib/provenance";
 import { nowIso, parseJson } from "../lib/utils";
 import { enqueueJob } from "./jobs";
 import { readNoteForAdmin, readNoteForCollections, readNoteForMcpAdmin } from "./notes";
@@ -78,11 +80,20 @@ export async function readNoteVersion(
 ) {
   const note = await authorizeVersionRead(env, principal, noteId);
   const { row, markdown } = await readVersionObject(env, noteId, version);
+  const parsed = parseMarkdownDocument(markdown);
+  const source = parsed.frontmatter.source ?? null;
+  const reviewAfter = parsed.frontmatter.review_after ?? null;
   return {
     ...versionSummary(row),
     collectionId: note.collectionId,
     currentVersion: note.version,
     markdown,
+    source: source as SourceMetadata | null,
+    observedAt: source?.observed_at ?? null,
+    reviewedAt: parsed.frontmatter.reviewed_at ?? null,
+    reviewAfter,
+    supersedes: parsed.frontmatter.supersedes,
+    warnings: freshnessWarnings(reviewAfter),
   };
 }
 
@@ -155,10 +166,27 @@ export async function restoreNoteVersion(
 
   const { markdown: sourceMarkdown } = await readVersionObject(env, noteId, sourceVersion);
   const version = expectedVersion + 1;
-  const document = canonicalizeMarkdown(sourceMarkdown, { id: noteId, version });
+  let restorationMarkdown = sourceMarkdown;
+  if (isMcpPrincipal(principal)) {
+    const parsed = parseMarkdownDocument(sourceMarkdown);
+    if (note.reviewedAt) parsed.frontmatter.reviewed_at = note.reviewedAt;
+    else delete parsed.frontmatter.reviewed_at;
+    restorationMarkdown = serializeMarkdownDocument(parsed);
+  }
+  const document = canonicalizeMarkdown(restorationMarkdown, {
+    id: noteId,
+    version,
+    reviewedAt: note.reviewedAt,
+    allowReviewedAtChange: !isMcpPrincipal(principal),
+  });
+  await assertSupersedesTargets(env, note.collectionId, noteId, document.frontmatter.supersedes);
   const contentHash = await sha256(document.markdown);
   const actor = principalActor(principal);
   const now = nowIso();
+  const source = document.frontmatter.source ?? null;
+  const reviewedAt = document.frontmatter.reviewed_at ?? null;
+  const reviewAfter = document.frontmatter.review_after ?? null;
+  const supersedesJson = document.frontmatter.supersedes.length ? JSON.stringify(document.frontmatter.supersedes) : null;
   const versionObject = await writeVersionObject(env, {
     collectionId: note.collectionId,
     noteId,
@@ -171,7 +199,9 @@ export async function restoreNoteVersion(
     const [updateResult, insertResult] = await env.DB.batch([
       env.DB.prepare(`
         UPDATE notes
-        SET title = ?, tags_json = ?, status = ?, version = ?, content_hash = ?, updated_at = ?, updated_by = ?
+        SET title = ?, tags_json = ?, status = ?, version = ?, content_hash = ?,
+            source_json = ?, observed_at = ?, reviewed_at = ?, review_after = ?, supersedes_json = ?,
+            updated_at = ?, updated_by = ?
         WHERE id = ? AND version = ? AND status != 'deleted'
       `).bind(
         document.frontmatter.title,
@@ -179,6 +209,11 @@ export async function restoreNoteVersion(
         document.frontmatter.status,
         version,
         contentHash,
+        source ? JSON.stringify(source) : null,
+        source?.observed_at ?? null,
+        reviewedAt,
+        reviewAfter,
+        supersedesJson,
         now,
         actor.authorId,
         noteId,
@@ -239,7 +274,13 @@ export async function restoreNoteVersion(
     resourceType: "note",
     resourceId: noteId,
     collectionIds: [note.collectionId],
-    metadata: { sourceVersion, currentVersion: expectedVersion, restoredVersion: version, jobId },
+    metadata: {
+      sourceVersion,
+      currentVersion: expectedVersion,
+      restoredVersion: version,
+      reviewedAtPreservedForAgent: isMcpPrincipal(principal),
+      jobId,
+    },
   });
 
   return {
@@ -251,6 +292,12 @@ export async function restoreNoteVersion(
     title: document.frontmatter.title,
     tags: document.frontmatter.tags,
     status: document.frontmatter.status,
+    source,
+    observedAt: source?.observed_at ?? null,
+    reviewedAt,
+    reviewAfter,
+    supersedes: document.frontmatter.supersedes,
+    warnings: freshnessWarnings(reviewAfter),
     contentHash,
     updatedAt: now,
     updatedBy: actor.authorId,
