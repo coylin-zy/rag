@@ -7,6 +7,7 @@ import { app as baseApp } from "./apiProvenance";
 import type { AppVariables, Env } from "./env";
 import { adminAuth } from "./lib/auth";
 import { ApiError, errorResponse } from "./lib/errors";
+import { applyImportJob, cancelImportJob } from "./services/importApply";
 import { createImportJob, getImportJob, planImportJob, uploadImportItem } from "./services/importJobs";
 
 type AppEnv = { Bindings: Env; Variables: AppVariables };
@@ -40,6 +41,15 @@ const uploadSchema = z.object({
   sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).nullable().optional(),
 });
 
+const applySchema = z.object({
+  planVersion: z.number().int().positive(),
+  decisions: z.array(z.object({
+    itemId: z.string().uuid(),
+    decision: z.enum(["skip", "overwrite", "copy"]),
+    copyPath: z.string().min(1).max(2048).nullable().optional(),
+  })).max(500).default([]),
+});
+
 export const app = new Hono<AppEnv>();
 app.onError((error, c) => errorResponse(c, error));
 
@@ -67,6 +77,19 @@ app.use("/api/v1/import-jobs/:jobId/plan", requestMetadata, productionOrigin, ad
 app.post("/api/v1/import-jobs/:jobId/plan", async (c) => {
   const jobId = z.string().uuid().parse(c.req.param("jobId"));
   return ok(c, await planImportJob(c.env, c.get("principal"), jobId));
+});
+
+app.use("/api/v1/import-jobs/:jobId/apply", requestMetadata, productionOrigin, adminAuth());
+app.post("/api/v1/import-jobs/:jobId/apply", async (c) => {
+  const jobId = z.string().uuid().parse(c.req.param("jobId"));
+  const input = applySchema.parse(await c.req.json());
+  return ok(c, await applyImportJob(c.env, c.get("principal"), jobId, input));
+});
+
+app.use("/api/v1/import-jobs/:jobId/cancel", requestMetadata, productionOrigin, adminAuth());
+app.post("/api/v1/import-jobs/:jobId/cancel", async (c) => {
+  const jobId = z.string().uuid().parse(c.req.param("jobId"));
+  return ok(c, await cancelImportJob(c.env, c.get("principal"), jobId));
 });
 
 app.route("/", baseApp);
