@@ -116,10 +116,27 @@ async function writeVersionObject(
   return { key, created: Boolean(written) };
 }
 
-async function removeUnusedVersionObject(
+async function cleanupFailedVersion(
   env: Env,
-  input: { key: string; created: boolean; noteId: string; version: number; contentHash: string },
+  input: { key: string; created: boolean; noteId: string; version: number; contentHash: string; inserted: boolean },
 ): Promise<void> {
+  if (input.inserted) {
+    await env.DB.prepare(`
+      DELETE FROM note_versions
+      WHERE note_id = ? AND version = ? AND content_hash = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM notes
+          WHERE id = ? AND version = ? AND content_hash = ?
+        )
+    `).bind(
+      input.noteId,
+      input.version,
+      input.contentHash,
+      input.noteId,
+      input.version,
+      input.contentHash,
+    ).run();
+  }
   if (!input.created) return;
   const reference = await env.DB.prepare(`
     SELECT
@@ -194,15 +211,40 @@ export async function restoreNoteVersion(
     markdown: document.markdown,
     contentHash,
   });
+  let inserted = false;
 
   try {
-    const [updateResult, insertResult] = await env.DB.batch([
+    const [insertResult, updateResult] = await env.DB.batch([
+      env.DB.prepare(`
+        INSERT INTO note_versions (note_id, version, r2_key, content_hash, title, tags_json, created_at, created_by)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM notes
+          WHERE id = ? AND version = ? AND status != 'deleted'
+        )
+        ON CONFLICT(note_id, version) DO NOTHING
+      `).bind(
+        noteId,
+        version,
+        versionObject.key,
+        contentHash,
+        document.frontmatter.title,
+        JSON.stringify(document.frontmatter.tags),
+        now,
+        actor.authorId,
+        noteId,
+        expectedVersion,
+      ),
       env.DB.prepare(`
         UPDATE notes
         SET title = ?, tags_json = ?, status = ?, version = ?, content_hash = ?,
             source_json = ?, observed_at = ?, reviewed_at = ?, review_after = ?, supersedes_json = ?,
             updated_at = ?, updated_by = ?
         WHERE id = ? AND version = ? AND status != 'deleted'
+          AND EXISTS (
+            SELECT 1 FROM note_versions
+            WHERE note_id = ? AND version = ? AND content_hash = ?
+          )
       `).bind(
         document.frontmatter.title,
         JSON.stringify(document.frontmatter.tags),
@@ -218,45 +260,29 @@ export async function restoreNoteVersion(
         actor.authorId,
         noteId,
         expectedVersion,
-      ),
-      env.DB.prepare(`
-        INSERT INTO note_versions (note_id, version, r2_key, content_hash, title, tags_json, created_at, created_by)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?
-        WHERE EXISTS (
-          SELECT 1 FROM notes
-          WHERE id = ? AND version = ? AND content_hash = ? AND updated_at = ? AND updated_by = ? AND status != 'deleted'
-        )
-      `).bind(
-        noteId,
-        version,
-        versionObject.key,
-        contentHash,
-        document.frontmatter.title,
-        JSON.stringify(document.frontmatter.tags),
-        now,
-        actor.authorId,
         noteId,
         version,
         contentHash,
-        now,
-        actor.authorId,
       ),
     ]);
-    if (Number(updateResult.meta.changes) !== 1 || Number(insertResult.meta.changes) !== 1) {
-      await removeUnusedVersionObject(env, {
+    inserted = Number(insertResult.meta.changes) === 1;
+    if (Number(updateResult.meta.changes) !== 1) {
+      await cleanupFailedVersion(env, {
         ...versionObject,
         noteId,
         version,
         contentHash,
+        inserted,
       });
       throw new ApiError(409, "version_conflict", "文档在回滚期间被更新或移入回收站，请重新查看 Diff");
     }
   } catch (error) {
-    await removeUnusedVersionObject(env, {
+    await cleanupFailedVersion(env, {
       ...versionObject,
       noteId,
       version,
       contentHash,
+      inserted,
     }).catch(() => undefined);
     if (error instanceof ApiError) throw error;
     throw new ApiError(409, "version_conflict", "文档在回滚期间被其他操作更新，请重新查看 Diff");
