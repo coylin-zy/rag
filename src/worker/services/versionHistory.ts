@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 
-import type { AdminPrincipal, Env, KnowledgePrincipal, McpPrincipal } from "@worker/env";
+import type { Env, KnowledgePrincipal } from "@worker/env";
 
 import { createDb } from "../db/client";
 import { noteVersions, notes } from "../db/schema";
@@ -89,7 +89,7 @@ export async function readNoteVersion(
 async function writeVersionObject(
   env: Env,
   input: { collectionId: string; noteId: string; version: number; markdown: string; contentHash: string },
-): Promise<string> {
+): Promise<{ key: string; created: boolean }> {
   const key = `versions/${input.collectionId}/${input.noteId}/${input.version}.md`;
   const written = await env.NOTES.put(key, input.markdown, {
     httpMetadata: { contentType: "text/markdown; charset=utf-8" },
@@ -102,7 +102,33 @@ async function writeVersionObject(
       throw new ApiError(409, "version_conflict", "该文档版本已由其他更新占用");
     }
   }
-  return key;
+  return { key, created: Boolean(written) };
+}
+
+async function removeUnusedVersionObject(
+  env: Env,
+  input: { key: string; created: boolean; noteId: string; version: number; contentHash: string },
+): Promise<void> {
+  if (!input.created) return;
+  const reference = await env.DB.prepare(`
+    SELECT
+      n.version AS currentVersion,
+      n.content_hash AS currentHash,
+      v.content_hash AS versionHash
+    FROM notes n
+    LEFT JOIN note_versions v ON v.note_id = n.id AND v.version = ?
+    WHERE n.id = ?
+    LIMIT 1
+  `).bind(input.version, input.noteId).first<{
+    currentVersion: number;
+    currentHash: string;
+    versionHash: string | null;
+  }>();
+  if (
+    reference?.versionHash === input.contentHash
+    || (reference?.currentVersion === input.version && reference.currentHash === input.contentHash)
+  ) return;
+  await env.NOTES.delete(input.key);
 }
 
 export async function restoreNoteVersion(
@@ -123,6 +149,9 @@ export async function restoreNoteVersion(
   if (sourceVersion === expectedVersion) {
     throw new ApiError(409, "restore_source_is_current", "不能把当前版本恢复为自身");
   }
+  if (sourceVersion > expectedVersion) {
+    throw new ApiError(409, "restore_source_not_historical", "只能恢复当前版本之前的历史版本");
+  }
 
   const { markdown: sourceMarkdown } = await readVersionObject(env, noteId, sourceVersion);
   const version = expectedVersion + 1;
@@ -130,7 +159,7 @@ export async function restoreNoteVersion(
   const contentHash = await sha256(document.markdown);
   const actor = principalActor(principal);
   const now = nowIso();
-  const r2Key = await writeVersionObject(env, {
+  const versionObject = await writeVersionObject(env, {
     collectionId: note.collectionId,
     noteId,
     version,
@@ -139,28 +168,62 @@ export async function restoreNoteVersion(
   });
 
   try {
-    await db.batch([
-      db.update(notes).set({
-        title: document.frontmatter.title,
-        tagsJson: JSON.stringify(document.frontmatter.tags),
-        status: document.frontmatter.status,
+    const [updateResult, insertResult] = await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE notes
+        SET title = ?, tags_json = ?, status = ?, version = ?, content_hash = ?, updated_at = ?, updated_by = ?
+        WHERE id = ? AND version = ? AND status != 'deleted'
+      `).bind(
+        document.frontmatter.title,
+        JSON.stringify(document.frontmatter.tags),
+        document.frontmatter.status,
         version,
         contentHash,
-        updatedAt: now,
-        updatedBy: actor.authorId,
-      }).where(and(eq(notes.id, noteId), eq(notes.version, expectedVersion))),
-      db.insert(noteVersions).values({
+        now,
+        actor.authorId,
+        noteId,
+        expectedVersion,
+      ),
+      env.DB.prepare(`
+        INSERT INTO note_versions (note_id, version, r2_key, content_hash, title, tags_json, created_at, created_by)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM notes
+          WHERE id = ? AND version = ? AND content_hash = ? AND updated_at = ? AND updated_by = ? AND status != 'deleted'
+        )
+      `).bind(
         noteId,
         version,
-        r2Key,
+        versionObject.key,
         contentHash,
-        title: document.frontmatter.title,
-        tagsJson: JSON.stringify(document.frontmatter.tags),
-        createdAt: now,
-        createdBy: actor.authorId,
-      }),
+        document.frontmatter.title,
+        JSON.stringify(document.frontmatter.tags),
+        now,
+        actor.authorId,
+        noteId,
+        version,
+        contentHash,
+        now,
+        actor.authorId,
+      ),
     ]);
-  } catch {
+    if (Number(updateResult.meta.changes) !== 1 || Number(insertResult.meta.changes) !== 1) {
+      await removeUnusedVersionObject(env, {
+        ...versionObject,
+        noteId,
+        version,
+        contentHash,
+      });
+      throw new ApiError(409, "version_conflict", "文档在回滚期间被更新或移入回收站，请重新查看 Diff");
+    }
+  } catch (error) {
+    await removeUnusedVersionObject(env, {
+      ...versionObject,
+      noteId,
+      version,
+      contentHash,
+    }).catch(() => undefined);
+    if (error instanceof ApiError) throw error;
     throw new ApiError(409, "version_conflict", "文档在回滚期间被其他操作更新，请重新查看 Diff");
   }
 
@@ -193,12 +256,4 @@ export async function restoreNoteVersion(
     updatedBy: actor.authorId,
     jobId,
   };
-}
-
-export function isMcpVersionPrincipal(principal: KnowledgePrincipal): principal is McpPrincipal {
-  return isMcpPrincipal(principal);
-}
-
-export function isAdminVersionPrincipal(principal: KnowledgePrincipal): principal is AdminPrincipal {
-  return !isMcpPrincipal(principal);
 }
