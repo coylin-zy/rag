@@ -1,10 +1,11 @@
 import YAML from "yaml";
 import { z } from "zod";
 
-import { MAX_MARKDOWN_BYTES, utf8ByteLength } from "@shared/contracts";
+import { MAX_MARKDOWN_BYTES, sourceMetadataSchema, utf8ByteLength } from "@shared/contracts";
 import { stripFrontmatter } from "@shared/markdown";
 
 import { ApiError } from "./errors";
+import { validateSourceMetadata } from "./provenance";
 import { uniqueStrings } from "./utils";
 
 export { stripFrontmatter } from "@shared/markdown";
@@ -15,6 +16,10 @@ const frontmatterSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(60)).max(20).default([]),
   status: z.enum(["draft", "published"]).default("published"),
   version: z.number().int().positive().optional(),
+  source: sourceMetadataSchema.nullable().optional(),
+  review_after: z.string().datetime().nullable().optional(),
+  reviewed_at: z.string().datetime().nullable().optional(),
+  supersedes: z.array(z.string().uuid()).max(50).default([]),
 });
 
 export interface MarkdownDocument {
@@ -48,7 +53,11 @@ export function parseMarkdownDocument(markdown: string): MarkdownDocument {
   if (!body) throw new ApiError(422, "empty_markdown", "Markdown 正文不能为空");
 
   return {
-    frontmatter: { ...frontmatter, tags: uniqueStrings(frontmatter.tags) },
+    frontmatter: {
+      ...frontmatter,
+      tags: uniqueStrings(frontmatter.tags),
+      supersedes: uniqueStrings(frontmatter.supersedes),
+    },
     body,
   };
 }
@@ -60,20 +69,44 @@ export function serializeMarkdownDocument(document: MarkdownDocument): string {
 
 export function canonicalizeMarkdown(
   markdown: string,
-  identity: { id: string; version: number; status?: "draft" | "published" },
+  identity: {
+    id: string;
+    version: number;
+    status?: "draft" | "published";
+    reviewedAt?: string | null;
+    allowReviewedAtChange?: boolean;
+  },
 ): MarkdownDocument & { markdown: string } {
   const parsed = parseMarkdownDocument(markdown);
   if (parsed.frontmatter.id && parsed.frontmatter.id !== identity.id) {
     throw new ApiError(409, "note_id_mismatch", "frontmatter 中的文档 ID 与当前文档不一致");
   }
 
+  const currentReviewedAt = identity.reviewedAt ?? null;
+  const submittedReviewedAt = parsed.frontmatter.reviewed_at;
+  if (
+    !identity.allowReviewedAtChange
+    && submittedReviewedAt !== undefined
+    && (submittedReviewedAt ?? null) !== currentReviewedAt
+  ) {
+    throw new ApiError(422, "reviewed_at_managed", "reviewed_at 只能通过人工复核操作更新");
+  }
+
+  const source = validateSourceMetadata(parsed.frontmatter.source);
+  const reviewedAt = identity.allowReviewedAtChange
+    ? (submittedReviewedAt ?? null)
+    : currentReviewedAt;
   const frontmatter = {
     id: identity.id,
     title: parsed.frontmatter.title,
     tags: parsed.frontmatter.tags,
     status: identity.status ?? parsed.frontmatter.status,
     version: identity.version,
+    ...(source ? { source } : {}),
+    ...(parsed.frontmatter.review_after ? { review_after: parsed.frontmatter.review_after } : {}),
+    ...(reviewedAt ? { reviewed_at: reviewedAt } : {}),
+    ...(parsed.frontmatter.supersedes.length ? { supersedes: parsed.frontmatter.supersedes } : {}),
   };
-  const canonical = { frontmatter, body: parsed.body };
+  const canonical = { frontmatter, body: parsed.body } as MarkdownDocument;
   return { ...canonical, markdown: serializeMarkdownDocument(canonical) };
 }
