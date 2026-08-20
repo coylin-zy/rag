@@ -17,6 +17,7 @@
     "test:e2e": "pnpm db:migrate:local && playwright test",
     "verify:web-build": "node scripts/verify-web-build.mjs",
     "verify:production:web": "node scripts/verify-production-web.mjs",
+    "verify:backup": "node scripts/verify-backup.mjs",
     "db:migrate:local": "wrangler d1 migrations apply knowledge-core-db --local",
     "db:migrate:remote": "wrangler d1 migrations apply knowledge-core-db --remote",
     "deploy:check": "node scripts/check-deploy-config.mjs",
