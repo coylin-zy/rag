@@ -88,6 +88,15 @@ watch(() => route.fullPath, async () => {
           <component :is="item.icon" :size="24" weight="regular" />
           <span>{{ item.label }}</span>
         </RouterLink>
+        <RouterLink
+          v-if="typeof route.params.collectionId === 'string' && typeof route.params.noteId === 'string'"
+          :to="`/knowledge/${route.params.collectionId}/notes/${route.params.noteId}/versions`"
+          class="product-nav__item"
+          data-testid="version-diff-nav"
+        >
+          <PhArrowClockwise :size="24" weight="regular" />
+          <span>版本对比</span>
+        </RouterLink>
       </nav>
 
       <div class="product-rail__footer">
