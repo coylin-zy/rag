@@ -9,6 +9,7 @@ export const router = createRouter({
     { path: "/knowledge/:collectionId", name: "collection", component: () => import("./views/KnowledgeView.vue"), meta: { title: "知识库" } },
     { path: "/knowledge/:collectionId/notes/:noteId", name: "note", component: () => import("./views/KnowledgeView.vue"), meta: { title: "知识库" } },
     { path: "/knowledge/:collectionId/notes/:noteId/versions", name: "note-versions", component: () => import("./views/VersionHistoryView.vue"), meta: { title: "版本差异" } },
+    { path: "/review-due", name: "review-due", component: () => import("./views/ReviewDueView.vue"), meta: { title: "待复核知识" } },
     { path: "/search", name: "search", component: () => import("./views/SearchView.vue"), meta: { title: "检索调试" } },
     { path: "/proposals", name: "proposals", component: () => import("./views/ProposalsView.vue"), meta: { title: "记忆审核" } },
     { path: "/tokens", name: "tokens", component: () => import("./views/TokensView.vue"), meta: { title: "MCP Token" } },
