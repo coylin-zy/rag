@@ -100,6 +100,7 @@ watch(() => route.fullPath, async () => {
       </nav>
 
       <div class="product-rail__footer">
+        <RouterLink class="rail-utility" to="/review-due" title="待复核知识" aria-label="待复核知识" data-testid="review-due-nav"><PhWarningCircle :size="21" /></RouterLink>
         <div class="worker-indicator" :class="{ 'worker-indicator--offline': appStore.initializationError }" :title="appStore.initialized ? 'Cloudflare Worker 在线' : appStore.initializationError ? 'Cloudflare Worker 连接失败' : '正在连接 Cloudflare Worker'">
           <span aria-hidden="true" />{{ appStore.initialized ? '在线' : appStore.initializationError ? '连接失败' : '连接中' }}
         </div>
