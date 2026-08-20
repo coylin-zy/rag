@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { apiRequest, createCollection, createNote, jsonInit, queueSendResponse } from "./helpers";
+import { apiRequest, createCollection, createNote, jsonInit, queueSendResponse, workerFetch } from "./helpers";
 
 interface ExportManifest {
   kind: "portable" | "full_backup";
@@ -38,10 +38,8 @@ async function readManifest(jobId: string) {
 }
 
 async function fetchExportObject(jobId: string, objectId: string) {
-  const response = await apiRequest<never>(`/__never__`); // keep helper imports exercised without decoding raw body
-  void response;
-  const raw = await (await import("./helpers")).workerFetch(`/api/v1/export-jobs/${jobId}/objects/${objectId}`);
-  return { response: raw, text: await raw.text() };
+  const response = await workerFetch(`/api/v1/export-jobs/${jobId}/objects/${objectId}`);
+  return { response, text: await response.text() };
 }
 
 async function createImportJob(collectionId: string) {
