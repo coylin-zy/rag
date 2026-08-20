@@ -1,3 +1,7 @@
+CREATE UNIQUE INDEX idx_notes_collection_external_path_unique
+  ON notes(collection_id, external_path)
+  WHERE external_path IS NOT NULL;
+
 CREATE TABLE transfer_jobs (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL CHECK (kind IN ('import', 'export_portable', 'export_backup')),
