@@ -34,6 +34,10 @@
       {
         "binding": "INDEX_QUEUE",
         "queue": "knowledge-core-test-index"
+      },
+      {
+        "binding": "TRANSFER_QUEUE",
+        "queue": "knowledge-core-test-transfer"
       }
     ],
     "consumers": [
@@ -43,6 +47,13 @@
         "max_batch_timeout": 1,
         "max_retries": 5,
         "dead_letter_queue": "knowledge-core-test-index-dlq"
+      },
+      {
+        "queue": "knowledge-core-test-transfer",
+        "max_batch_size": 5,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "dead_letter_queue": "knowledge-core-test-transfer-dlq"
       }
     ]
   },
