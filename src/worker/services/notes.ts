@@ -65,7 +65,7 @@ async function getVersionMarkdown(env: Env, noteId: string, version: number): Pr
 async function writeVersionObject(
   env: Env,
   input: { collectionId: string; noteId: string; version: number; markdown: string; contentHash: string },
-): Promise<string> {
+): Promise<{ key: string; created: boolean }> {
   const key = `versions/${input.collectionId}/${input.noteId}/${input.version}.md`;
   const options: R2PutOptions = {
     httpMetadata: { contentType: "text/markdown; charset=utf-8" },
@@ -79,7 +79,46 @@ async function writeVersionObject(
       throw new ApiError(409, "version_conflict", "该文档版本已由其他更新占用");
     }
   }
-  return key;
+  return { key, created: Boolean(written) };
+}
+
+async function cleanupFailedNoteVersion(
+  env: Env,
+  input: { key: string; created: boolean; noteId: string; version: number; contentHash: string; inserted: boolean },
+): Promise<void> {
+  if (input.inserted) {
+    await env.DB.prepare(`
+      DELETE FROM note_versions
+      WHERE note_id = ? AND version = ? AND content_hash = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM notes
+          WHERE id = ? AND version = ? AND content_hash = ?
+        )
+    `).bind(
+      input.noteId,
+      input.version,
+      input.contentHash,
+      input.noteId,
+      input.version,
+      input.contentHash,
+    ).run();
+  }
+  if (!input.created) return;
+  const reference = await env.DB.prepare(`
+    SELECT n.version AS currentVersion, n.content_hash AS currentHash, v.content_hash AS versionHash
+    FROM notes n
+    LEFT JOIN note_versions v ON v.note_id = n.id AND v.version = ?
+    WHERE n.id = ? LIMIT 1
+  `).bind(input.version, input.noteId).first<{
+    currentVersion: number;
+    currentHash: string;
+    versionHash: string | null;
+  }>();
+  if (
+    reference?.versionHash === input.contentHash
+    || (reference?.currentVersion === input.version && reference.currentHash === input.contentHash)
+  ) return;
+  await env.NOTES.delete(input.key);
 }
 
 async function refreshCurrentObject(
@@ -185,7 +224,7 @@ export async function createNote(
   const now = nowIso();
   const actor = principalActor(principal);
   const provenance = provenanceValues(document);
-  const r2Key = await writeVersionObject(env, { collectionId, noteId: id, version, markdown: document.markdown, contentHash });
+  const versionObject = await writeVersionObject(env, { collectionId, noteId: id, version, markdown: document.markdown, contentHash });
 
   await db.batch([
     db.insert(notes).values({
@@ -206,7 +245,7 @@ export async function createNote(
     db.insert(noteVersions).values({
       noteId: id,
       version,
-      r2Key,
+      r2Key: versionObject.key,
       contentHash,
       title: document.frontmatter.title,
       tagsJson: JSON.stringify(document.frontmatter.tags),
@@ -229,7 +268,6 @@ export async function updateNote(
   expectedVersion: number,
   markdownInput: string,
 ): Promise<NoteSummary & { jobId: string | null }> {
-  const db = createDb(env.DB);
   const current = await getNoteRow(env, noteId);
   await requireKnowledgeRole(env, principal, current.collectionId, "editor");
   if (current.status === "deleted") throw new ApiError(409, "note_deleted", "已删除文档不能继续更新");
@@ -254,44 +292,89 @@ export async function updateNote(
   });
   const contentHash = await sha256(document.markdown);
   const provenance = provenanceValues(document);
-
   const now = nowIso();
   const actor = principalActor(principal);
-  const r2Key = await writeVersionObject(env, {
+  const versionObject = await writeVersionObject(env, {
     collectionId: current.collectionId,
     noteId,
     version,
     markdown: document.markdown,
     contentHash,
   });
+  let inserted = false;
 
   try {
-    await db.batch([
-      db
-        .update(notes)
-        .set({
-          title: document.frontmatter.title,
-          tagsJson: JSON.stringify(document.frontmatter.tags),
-          status: document.frontmatter.status,
-          version,
-          contentHash,
-          updatedAt: now,
-          updatedBy: actor.authorId,
-          ...provenance,
-        })
-        .where(and(eq(notes.id, noteId), eq(notes.version, expectedVersion), ne(notes.status, "deleted"))),
-      db.insert(noteVersions).values({
+    const [insertResult, updateResult] = await env.DB.batch([
+      env.DB.prepare(`
+        INSERT INTO note_versions (note_id, version, r2_key, content_hash, title, tags_json, created_at, created_by)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM notes
+          WHERE id = ? AND version = ? AND status != 'deleted'
+        )
+        ON CONFLICT(note_id, version) DO NOTHING
+      `).bind(
         noteId,
         version,
-        r2Key,
+        versionObject.key,
         contentHash,
-        title: document.frontmatter.title,
-        tagsJson: JSON.stringify(document.frontmatter.tags),
-        createdAt: now,
-        createdBy: actor.authorId,
-      }),
+        document.frontmatter.title,
+        JSON.stringify(document.frontmatter.tags),
+        now,
+        actor.authorId,
+        noteId,
+        expectedVersion,
+      ),
+      env.DB.prepare(`
+        UPDATE notes
+        SET title = ?, tags_json = ?, status = ?, version = ?, content_hash = ?,
+            source_json = ?, observed_at = ?, reviewed_at = ?, review_after = ?, supersedes_json = ?,
+            updated_at = ?, updated_by = ?
+        WHERE id = ? AND version = ? AND status != 'deleted'
+          AND EXISTS (
+            SELECT 1 FROM note_versions
+            WHERE note_id = ? AND version = ? AND content_hash = ?
+          )
+      `).bind(
+        document.frontmatter.title,
+        JSON.stringify(document.frontmatter.tags),
+        document.frontmatter.status,
+        version,
+        contentHash,
+        provenance.sourceJson,
+        provenance.observedAt,
+        provenance.reviewedAt,
+        provenance.reviewAfter,
+        provenance.supersedesJson,
+        now,
+        actor.authorId,
+        noteId,
+        expectedVersion,
+        noteId,
+        version,
+        contentHash,
+      ),
     ]);
-  } catch {
+    inserted = Number(insertResult.meta.changes) === 1;
+    if (Number(updateResult.meta.changes) !== 1) {
+      await cleanupFailedNoteVersion(env, {
+        ...versionObject,
+        noteId,
+        version,
+        contentHash,
+        inserted,
+      });
+      throw new ApiError(409, "version_conflict", "文档在保存期间被更新或移入回收站");
+    }
+  } catch (error) {
+    await cleanupFailedNoteVersion(env, {
+      ...versionObject,
+      noteId,
+      version,
+      contentHash,
+      inserted,
+    }).catch(() => undefined);
+    if (error instanceof ApiError) throw error;
     throw new ApiError(409, "version_conflict", "文档在保存期间被其他用户更新");
   }
 
