@@ -43,11 +43,17 @@ export const notes = sqliteTable(
     deletedFromStatus: text("deleted_from_status", { enum: ["draft", "published"] }),
     deletedBy: text("deleted_by"),
     deleteReason: text("delete_reason"),
+    sourceJson: text("source_json"),
+    observedAt: text("observed_at"),
+    reviewedAt: text("reviewed_at"),
+    reviewAfter: text("review_after"),
+    supersedesJson: text("supersedes_json"),
   },
   (table) => [
     index("idx_notes_collection_updated").on(table.collectionId, table.updatedAt),
     index("idx_notes_status").on(table.status),
     index("idx_notes_collection_deleted").on(table.collectionId, table.deletedAt),
+    index("idx_notes_collection_review_after").on(table.collectionId, table.reviewAfter),
   ],
 );
 

@@ -19,6 +19,7 @@ import {
   readNoteForMcpAdmin,
   readNoteVersion,
   restoreDeletedNote,
+  reviewNote,
   restoreVersion,
   updateNote,
 } from "./services/notes";
@@ -491,6 +492,29 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
           }
           return restoreVersion(env, principal, note_id, source_version);
         },
+      ),
+    );
+
+    server.registerTool(
+      "review_note",
+      {
+        title: "Review a note",
+        description: "Record a human review timestamp and optional next review deadline for a note.",
+        inputSchema: {
+          operation_id: z.string().uuid(),
+          note_id: z.string().uuid(),
+          expected_version: z.number().int().positive(),
+          review_after: z.string().datetime().nullable().optional(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      },
+      async ({ operation_id, note_id, expected_version, review_after }) => mutationResult(
+        env,
+        principal,
+        operation_id,
+        "review_note",
+        { note_id, expected_version, review_after: review_after ?? null },
+        () => reviewNote(env, principal, note_id, expected_version, review_after ?? null),
       ),
     );
   }

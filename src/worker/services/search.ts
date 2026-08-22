@@ -2,6 +2,7 @@ import type { SearchInput, SearchResult } from "@shared/contracts";
 import type { Env } from "@worker/env";
 
 import { ApiError } from "../lib/errors";
+import { freshnessWarnings } from "../lib/provenance";
 import { embedTexts, rerank } from "../lib/models";
 import { excerpt, parseJson, resourceUri } from "../lib/utils";
 
@@ -15,6 +16,10 @@ interface CandidateRow {
   content: string;
   updated_at: string;
   tags_json: string;
+  source_json: string | null;
+  observed_at: string | null;
+  reviewed_at: string | null;
+  review_after: string | null;
 }
 
 export function reciprocalRankFusion(rankings: string[][], k = 60): Map<string, number> {
@@ -33,7 +38,8 @@ async function lexicalCandidates(env: Env, query: string, collectionIds: string[
   const placeholders = collectionIds.map(() => "?").join(",");
   const common = `
     SELECT c.id, c.note_id, c.collection_id, c.version, c.title, c.heading_path_json,
-           c.content, n.updated_at, n.tags_json
+           c.content, n.updated_at, n.tags_json, n.source_json, n.observed_at,
+           n.reviewed_at, n.review_after
     FROM chunks c
     JOIN notes n ON n.id = c.note_id AND n.indexed_version = c.version
     JOIN collections k ON k.id = c.collection_id AND k.trashed_at IS NULL
@@ -44,7 +50,8 @@ async function lexicalCandidates(env: Env, query: string, collectionIds: string[
         .bind(...collectionIds, `%${query.replace(/[%_]/g, "\\$&")}%`)
     : env.DB.prepare(`
         SELECT c.id, c.note_id, c.collection_id, c.version, c.title, c.heading_path_json,
-               c.content, n.updated_at, n.tags_json
+               c.content, n.updated_at, n.tags_json, n.source_json, n.observed_at,
+               n.reviewed_at, n.review_after
         FROM chunks_fts
         JOIN chunks c ON c.id = chunks_fts.chunk_id
         JOIN notes n ON n.id = c.note_id AND n.indexed_version = c.version
@@ -77,7 +84,8 @@ async function hydrateCandidates(env: Env, ids: string[], collectionIds: string[
   const collectionPlaceholders = collectionIds.map(() => "?").join(",");
   const result = await env.DB.prepare(`
     SELECT c.id, c.note_id, c.collection_id, c.version, c.title, c.heading_path_json,
-           c.content, n.updated_at, n.tags_json
+           c.content, n.updated_at, n.tags_json, n.source_json, n.observed_at,
+           n.reviewed_at, n.review_after
     FROM chunks c
     JOIN notes n ON n.id = c.note_id AND n.indexed_version = c.version
     JOIN collections k ON k.id = c.collection_id AND k.trashed_at IS NULL
@@ -132,5 +140,10 @@ export async function searchKnowledge(env: Env, input: SearchInput, allowedColle
     version: row.version,
     resourceUri: resourceUri(row.collection_id, row.note_id),
     updatedAt: row.updated_at,
+    source: parseJson<SearchResult["source"]>(row.source_json ?? "null", null),
+    observedAt: row.observed_at,
+    reviewedAt: row.reviewed_at,
+    reviewAfter: row.review_after,
+    warnings: freshnessWarnings(row.review_after),
   }));
 }

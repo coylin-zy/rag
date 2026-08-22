@@ -16,6 +16,15 @@ export const noteStatusSchema = z.enum(["draft", "published", "deleted"]);
 export const jobStatusSchema = z.enum(["queued", "processing", "ready", "failed"]);
 export const tokenScopeSchema = z.enum(["knowledge:read", "memory:propose", "knowledge:admin"]);
 
+export const sourceTypeSchema = z.enum(["manual", "agent", "import", "git", "url", "project"]);
+
+export const sourceMetadataSchema = z.object({
+  type: sourceTypeSchema,
+  uri: z.string().trim().max(2048).nullable().default(null),
+  label: z.string().trim().max(240).nullable().default(null),
+  observed_at: z.string().datetime().nullable().default(null),
+});
+
 export const createCollectionSchema = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().trim().max(500).default(""),
@@ -70,6 +79,9 @@ export type NoteStatus = z.infer<typeof noteStatusSchema>;
 export type JobStatus = z.infer<typeof jobStatusSchema>;
 export type TokenScope = z.infer<typeof tokenScopeSchema>;
 export type SearchInput = z.infer<typeof searchSchema>;
+export type SourceType = z.infer<typeof sourceTypeSchema>;
+export type SourceMetadata = z.infer<typeof sourceMetadataSchema>;
+export type FreshnessWarning = "review_due";
 
 export interface ApiEnvelope<T> {
   data: T;
@@ -112,6 +124,12 @@ export interface NoteSummary {
   indexedVersion: number | null;
   updatedAt: string;
   updatedBy: string;
+  source?: SourceMetadata | null;
+  observedAt?: string | null;
+  reviewedAt?: string | null;
+  reviewAfter?: string | null;
+  supersedes?: string[];
+  warnings?: FreshnessWarning[];
 }
 
 export interface TrashedNoteSummary extends NoteSummary {
@@ -133,4 +151,9 @@ export interface SearchResult {
   version: number;
   resourceUri: string;
   updatedAt: string;
+  source?: SourceMetadata | null;
+  observedAt?: string | null;
+  reviewedAt?: string | null;
+  reviewAfter?: string | null;
+  warnings?: FreshnessWarning[];
 }

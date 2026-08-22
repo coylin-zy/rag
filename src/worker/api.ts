@@ -49,6 +49,7 @@ import {
   reindexNote,
   restoreDeletedNote,
   restoreVersion,
+  reviewNote,
   updateNote,
 } from "./services/notes";
 import { listProposals, readProposal, reviewProposal } from "./services/proposals";
@@ -259,6 +260,13 @@ app.post("/api/v1/notes/:noteId/restore", async (c) => {
   return ok(c, await restoreVersion(c.env, c.get("principal"), c.req.param("noteId"), version));
 });
 app.post("/api/v1/notes/:noteId/reindex", async (c) => ok(c, { jobId: await reindexNote(c.env, c.get("principal"), c.req.param("noteId")) }));
+app.post("/api/v1/notes/:noteId/review", async (c) => {
+  const input = z.object({
+    expectedVersion: z.number().int().positive(),
+    reviewAfter: z.string().datetime().nullable().optional(),
+  }).parse(await c.req.json());
+  return ok(c, await reviewNote(c.env, c.get("principal"), c.req.param("noteId"), input.expectedVersion, input.reviewAfter));
+});
 
 app.post("/api/v1/search", async (c) => {
   const input = searchSchema.parse(await c.req.json());

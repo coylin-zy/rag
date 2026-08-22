@@ -28,7 +28,7 @@ describe("Markdown frontmatter", () => {
 
   it("parses CRLF, normalizes tags and applies defaults", () => {
     const parsed = parseMarkdownDocument("---\r\ntitle: 测试\r\ntags: [MCP, MCP, ' RAG ']\r\n---\r\n\r\n正文\r\n");
-    expect(parsed.frontmatter).toEqual({ title: "测试", tags: ["MCP", "RAG"], status: "published" });
+    expect(parsed.frontmatter).toEqual({ title: "测试", tags: ["MCP", "RAG"], status: "published", supersedes: [] });
     expect(parsed.body).toBe("正文");
   });
 
@@ -49,7 +49,7 @@ describe("Markdown frontmatter", () => {
 
   it("round-trips YAML values without changing the body", () => {
     const markdown = serializeMarkdownDocument({
-      frontmatter: { title: "A: B", tags: ["中文", "mcp"], status: "published" },
+      frontmatter: { title: "A: B", tags: ["中文", "mcp"], status: "published", supersedes: [] },
       body: "# Heading\n\n```ts\nconst value = 1;\n```",
     });
     expect(parseMarkdownDocument(markdown).body).toContain("const value = 1");

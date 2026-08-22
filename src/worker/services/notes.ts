@@ -1,6 +1,6 @@
 import { and, desc, eq, gt, inArray, ne } from "drizzle-orm";
 
-import type { NoteSummary, TrashedNoteSummary } from "@shared/contracts";
+import type { NoteSummary, SourceMetadata, TrashedNoteSummary } from "@shared/contracts";
 import type { AdminPrincipal, Env, KnowledgePrincipal, McpPrincipal } from "@worker/env";
 
 import { createDb } from "../db/client";
@@ -10,6 +10,7 @@ import { writeAudit } from "../lib/audit";
 import { sha256 } from "../lib/crypto";
 import { ApiError } from "../lib/errors";
 import { canonicalizeMarkdown, parseMarkdownDocument } from "../lib/markdown";
+import { assertSupersedesTargets, freshnessWarnings } from "../lib/provenance";
 import { isMcpPrincipal, principalActor, requireKnowledgeRole } from "../lib/principal";
 import { nowIso, parseJson } from "../lib/utils";
 import { enqueueJob } from "./jobs";
@@ -25,6 +26,12 @@ function toSummary(row: typeof notes.$inferSelect): NoteSummary {
     indexedVersion: row.indexedVersion,
     updatedAt: row.updatedAt,
     updatedBy: row.updatedBy,
+    source: parseJson<SourceMetadata | null>(row.sourceJson ?? "null", null),
+    observedAt: row.observedAt,
+    reviewedAt: row.reviewedAt,
+    reviewAfter: row.reviewAfter,
+    supersedes: parseJson<string[]>(row.supersedesJson ?? "[]", []),
+    warnings: row.status === "deleted" ? [] : freshnessWarnings(row.reviewAfter),
   };
 }
 
@@ -91,6 +98,17 @@ async function refreshCurrentObject(
     httpMetadata: { contentType: "text/markdown; charset=utf-8" },
     customMetadata: { noteId, version: String(version), sha256: contentHash },
   });
+}
+
+function provenanceValues(document: ReturnType<typeof canonicalizeMarkdown>) {
+  const source = document.frontmatter.source ?? null;
+  return {
+    sourceJson: source ? JSON.stringify(source) : null,
+    observedAt: source?.observed_at ?? null,
+    reviewedAt: document.frontmatter.reviewed_at ?? null,
+    reviewAfter: document.frontmatter.review_after ?? null,
+    supersedesJson: document.frontmatter.supersedes.length ? JSON.stringify(document.frontmatter.supersedes) : null,
+  };
 }
 
 export async function listNotes(env: Env, principal: AdminPrincipal, collectionId: string): Promise<NoteSummary[]> {
@@ -165,10 +183,12 @@ export async function createNote(
   const db = createDb(env.DB);
   const id = crypto.randomUUID();
   const version = 1;
-  const document = canonicalizeMarkdown(markdownInput, { id, version });
+  const document = canonicalizeMarkdown(markdownInput, { id, version, reviewedAt: null });
+  await assertSupersedesTargets(env, collectionId, id, document.frontmatter.supersedes);
   const contentHash = await sha256(document.markdown);
   const now = nowIso();
   const actor = principalActor(principal);
+  const provenance = provenanceValues(document);
   const r2Key = await writeVersionObject(env, { collectionId, noteId: id, version, markdown: document.markdown, contentHash });
 
   await db.batch([
@@ -185,6 +205,7 @@ export async function createNote(
       updatedAt: now,
       createdBy: actor.authorId,
       updatedBy: actor.authorId,
+      ...provenance,
     }),
     db.insert(noteVersions).values({
       noteId: id,
@@ -220,16 +241,25 @@ export async function updateNote(
     throw new ApiError(409, "version_conflict", `文档已更新到版本 ${current.version}`);
   }
 
-  const submittedCurrent = canonicalizeMarkdown(markdownInput, { id: noteId, version: expectedVersion });
+  const submittedCurrent = canonicalizeMarkdown(markdownInput, {
+    id: noteId,
+    version: expectedVersion,
+    reviewedAt: current.reviewedAt,
+  });
   const storedCurrent = parseMarkdownDocument(await getVersionMarkdown(env, noteId, expectedVersion));
   const sameMetadata = submittedCurrent.frontmatter.title === storedCurrent.frontmatter.title
     && submittedCurrent.frontmatter.status === storedCurrent.frontmatter.status
-    && JSON.stringify(submittedCurrent.frontmatter.tags) === JSON.stringify(storedCurrent.frontmatter.tags);
+    && JSON.stringify(submittedCurrent.frontmatter.tags) === JSON.stringify(storedCurrent.frontmatter.tags)
+    && JSON.stringify(submittedCurrent.frontmatter.source ?? null) === JSON.stringify(storedCurrent.frontmatter.source ?? null)
+    && (submittedCurrent.frontmatter.review_after ?? null) === (storedCurrent.frontmatter.review_after ?? null)
+    && JSON.stringify(submittedCurrent.frontmatter.supersedes) === JSON.stringify(storedCurrent.frontmatter.supersedes);
   if (sameMetadata && submittedCurrent.body === storedCurrent.body) return { ...toSummary(current), jobId: null };
 
   const version = expectedVersion + 1;
-  const document = canonicalizeMarkdown(markdownInput, { id: noteId, version });
+  await assertSupersedesTargets(env, current.collectionId, noteId, canonicalizeMarkdown(markdownInput, { id: noteId, version }).frontmatter.supersedes);
+  const document = canonicalizeMarkdown(markdownInput, { id: noteId, version, reviewedAt: current.reviewedAt });
   const contentHash = await sha256(document.markdown);
+  const provenance = provenanceValues(document);
 
   const now = nowIso();
   const actor = principalActor(principal);
@@ -253,6 +283,7 @@ export async function updateNote(
           contentHash,
           updatedAt: now,
           updatedBy: actor.authorId,
+          ...provenance,
         })
         .where(and(eq(notes.id, noteId), eq(notes.version, expectedVersion))),
       db.insert(noteVersions).values({
@@ -481,4 +512,45 @@ export async function reindexNote(env: Env, principal: AdminPrincipal, noteId: s
   const jobId = await enqueueJob(env, { type: "index", noteId, version: note.version });
   await writeAudit(env, { actorType: "user", actorId: principal.email, action: "note.reindex", resourceType: "note", resourceId: noteId, collectionIds: [note.collectionId], metadata: { version: note.version, jobId } });
   return jobId;
+}
+
+export async function reviewNote(
+  env: Env,
+  principal: KnowledgePrincipal,
+  noteId: string,
+  expectedVersion: number,
+  reviewAfter?: string | null,
+) {
+  const note = await getNoteRow(env, noteId);
+  await requireKnowledgeRole(env, principal, note.collectionId, "editor");
+  if (note.status === "deleted") throw new ApiError(409, "note_deleted", "已删除文档不能复核");
+  if (note.version !== expectedVersion) {
+    throw new ApiError(409, "version_conflict", `文档已更新到版本 ${note.version}`);
+  }
+
+  const now = nowIso();
+  const actor = principalActor(principal);
+  const result = await env.DB.prepare(`
+    UPDATE notes SET reviewed_at = ?, review_after = ?, updated_at = ?, updated_by = ?
+    WHERE id = ? AND version = ? AND status != 'deleted'
+  `).bind(now, reviewAfter ?? null, now, actor.authorId, noteId, expectedVersion).run();
+  if (Number(result.meta.changes) !== 1) {
+    throw new ApiError(409, "version_conflict", "文档在复核前已被其他操作更新");
+  }
+
+  // Update R2 frontmatter to match
+  const markdown = await getVersionMarkdown(env, noteId, expectedVersion);
+  const document = canonicalizeMarkdown(markdown, { id: noteId, version: expectedVersion, reviewedAt: now, allowReviewedAtChange: true });
+  await refreshCurrentObject(env, note.collectionId, noteId, expectedVersion, document.markdown, await sha256(document.markdown));
+
+  await writeAudit(env, {
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    action: "note.review",
+    resourceType: "note",
+    resourceId: noteId,
+    collectionIds: [note.collectionId],
+    metadata: { version: expectedVersion, reviewedAt: now, reviewAfter: reviewAfter ?? null },
+  });
+  return toSummary(await getNoteRow(env, noteId));
 }

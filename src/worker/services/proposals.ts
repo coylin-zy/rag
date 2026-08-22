@@ -56,7 +56,7 @@ export async function submitProposal(
   const id = crypto.randomUUID();
   const key = proposalKey(input.collectionId, id);
   const markdown = serializeMarkdownDocument({
-    frontmatter: { title: input.title, tags: input.tags, status: "draft" },
+    frontmatter: { title: input.title, tags: input.tags, status: "draft", supersedes: [] },
     body: input.body,
   });
   assertMarkdownSize(markdown);
@@ -135,7 +135,7 @@ export async function reviewProposal(
       if (!object) throw new ApiError(503, "proposal_object_missing", "R2 中缺少提案内容");
       const parsed = parseMarkdownDocument(await object.text());
       const markdown = serializeMarkdownDocument({
-        frontmatter: { title: parsed.frontmatter.title, tags: parsed.frontmatter.tags, status: "published" },
+        frontmatter: { title: parsed.frontmatter.title, tags: parsed.frontmatter.tags, status: "published", supersedes: parsed.frontmatter.supersedes ?? [] },
         body: parsed.body,
       });
       const note = await createNote(env, principal, proposal.collectionId, markdown);
