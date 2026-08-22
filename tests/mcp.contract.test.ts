@@ -165,8 +165,12 @@ describe("stateless MCP contract", () => {
       "update_note",
       "delete_note",
       "restore_note",
+      "list_note_versions",
+      "read_note_version",
+      "diff_note_versions",
+      "restore_note_version",
     ]));
-    expect(names).toHaveLength(15);
+    expect(names).toHaveLength(19);
 
     const createdCollectionResponse = await rpc(token.token, "tools/call", {
       name: "create_collection",

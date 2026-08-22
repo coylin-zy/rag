@@ -10,11 +10,16 @@ import { isKnowledgeAdmin } from "./lib/principal";
 import { createCollection, restoreCollection, trashCollection, updateCollection } from "./services/collections";
 import {
   createNote,
+  diffNoteVersions,
   deleteNote,
+  getNoteVersionForMcp,
   listNotesForCollections,
+  listVersions,
   readNoteForCollections,
   readNoteForMcpAdmin,
+  readNoteVersion,
   restoreDeletedNote,
+  restoreVersion,
   updateNote,
 } from "./services/notes";
 import { submitProposal } from "./services/proposals";
@@ -417,6 +422,75 @@ function createMcpServer(env: Env, principal: McpPrincipal): McpServer {
         "restore_note",
         { note_id, expected_version, expected_deleted_at },
         () => restoreDeletedNote(env, principal, note_id, { expectedVersion: expected_version, expectedDeletedAt: expected_deleted_at }),
+      ),
+    );
+
+    server.registerTool(
+      "list_note_versions",
+      {
+        title: "List note versions",
+        description: "List all saved versions of a note, newest first. Read-only.",
+        inputSchema: { note_id: z.string().uuid() },
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
+      async ({ note_id }) => tracked(env, principal, "read", () => listVersions(env, principal, note_id)),
+    );
+
+    server.registerTool(
+      "read_note_version",
+      {
+        title: "Read a historical note version",
+        description: "Read the complete Markdown for a specific version of a note. Read-only.",
+        inputSchema: {
+          note_id: z.string().uuid(),
+          version: z.number().int().positive(),
+        },
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
+      async ({ note_id, version }) => tracked(env, principal, "read", () => readNoteVersion(env, principal, note_id, version)),
+    );
+
+    server.registerTool(
+      "diff_note_versions",
+      {
+        title: "Diff two note versions",
+        description: "Return line-level diff between two versions of a note. Read-only.",
+        inputSchema: {
+          note_id: z.string().uuid(),
+          from_version: z.number().int().positive(),
+          to_version: z.number().int().positive(),
+        },
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
+      async ({ note_id, from_version, to_version }) => tracked(env, principal, "read", () => diffNoteVersions(env, principal, note_id, from_version, to_version)),
+    );
+
+    server.registerTool(
+      "restore_note_version",
+      {
+        title: "Restore a historical note version",
+        description: "Restore a previous version as a new version using optimistic locking on the current version.",
+        inputSchema: {
+          operation_id: z.string().uuid(),
+          note_id: z.string().uuid(),
+          expected_version: z.number().int().positive(),
+          source_version: z.number().int().positive(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      },
+      async ({ operation_id, note_id, expected_version, source_version }) => mutationResult(
+        env,
+        principal,
+        operation_id,
+        "restore_note_version",
+        { note_id, expected_version, source_version },
+        async () => {
+          const current = await getNoteVersionForMcp(env, note_id);
+          if (current.version !== expected_version) {
+            throw new ApiError(409, "version_conflict", `文档已更新到版本 ${current.version}，请重新查看 Diff`);
+          }
+          return restoreVersion(env, principal, note_id, source_version);
+        },
       ),
     );
   }

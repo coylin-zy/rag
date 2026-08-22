@@ -34,7 +34,8 @@ import { useAppStore } from "@web/stores/app";
 import { useToastStore } from "@web/stores/toast";
 
 interface NoteDetail extends NoteSummary { markdown: string }
-interface VersionRow { noteId: string; version: number; title: string; createdAt: string; createdBy: string }
+interface VersionRow { noteId: string; version: number; title: string; contentHash: string; createdAt: string; createdBy: string }
+interface DiffLine { type: "same" | "add" | "remove"; text: string }
 interface MemberRow { collectionId: string; userEmail: string; role: Role; createdAt: string }
 
 const route = useRoute();
@@ -66,6 +67,9 @@ const noteForm = ref({ title: "", tags: "" });
 const creatingNote = ref(false);
 const showVersionsModal = ref(false);
 const versions = ref<VersionRow[]>([]);
+const diffLines = ref<DiffLine[]>([]);
+const diffLoading = ref(false);
+const diffFromVersion = ref(0);
 const showMembersModal = ref(false);
 const members = ref<MemberRow[]>([]);
 const memberForm = ref<{ email: string; role: Role }>({ email: "", role: "viewer" });
@@ -248,7 +252,24 @@ async function reindexCurrentNote() {
 async function openVersions() {
   if (!selectedNote.value) return;
   versions.value = await api<VersionRow[]>(`/api/v1/notes/${selectedNote.value.id}/versions`);
+  diffLines.value = [];
+  diffFromVersion.value = 0;
   showVersionsModal.value = true;
+}
+
+async function viewDiff(version: number) {
+  if (!selectedNote.value || !selectedNote.value.version) return;
+  if (version >= selectedNote.value.version) return;
+  diffLoading.value = true;
+  try {
+    const result = await api<{ lines: DiffLine[] }>(`/api/v1/notes/${selectedNote.value.id}/diff?from=${version}&to=${selectedNote.value.version}`);
+    diffLines.value = result.lines;
+    diffFromVersion.value = version;
+  } catch (error) {
+    toast.show(error instanceof Error ? error.message : "Diff 加载失败", "error");
+  } finally {
+    diffLoading.value = false;
+  }
 }
 
 async function restoreVersion(version: number) {
@@ -722,13 +743,24 @@ onBeforeUnmount(() => {
     </div>
   </ModalDialog>
 
-  <ModalDialog v-if="showVersionsModal" title="版本记录" :description="selectedNote?.title" @close="showVersionsModal = false">
-    <div class="version-list">
-      <div v-for="version in versions" :key="version.version" class="version-row">
-        <div><strong>版本 {{ version.version }}</strong><span>{{ formatDate(version.createdAt) }} · {{ version.createdBy }}</span></div>
-        <button class="button button--secondary" type="button" :disabled="version.version === selectedNote?.version" @click="restoreVersion(version.version)">恢复</button>
+  <ModalDialog v-if="showVersionsModal" title="版本记录" :description="selectedNote?.title" wide @close="showVersionsModal = false">
+    <div class="version-workspace">
+      <div class="version-list">
+        <div v-for="version in versions" :key="version.version" class="version-row" :class="{ 'version-row--current': version.version === selectedNote?.version, 'version-row--selected': diffFromVersion === version.version }">
+          <div><strong>版本 {{ version.version }}<template v-if="version.version === selectedNote?.version"> · 当前</template></strong><span>{{ formatDate(version.createdAt) }} · {{ version.createdBy }}</span></div>
+          <div class="version-actions">
+            <button class="button button--secondary" type="button" :disabled="version.version >= (selectedNote?.version ?? 0)" @click="viewDiff(version.version)">Diff</button>
+            <button class="button button--secondary" type="button" :disabled="version.version === selectedNote?.version || !canEdit" @click="restoreVersion(version.version)">恢复</button>
+          </div>
+        </div>
       </div>
     </div>
+    <template v-if="diffLines.length > 0">
+      <div class="diff-header">版本 {{ diffFromVersion }} → 版本 {{ selectedNote?.version }}</div>
+      <div v-if="diffLoading" class="diff-loading"><LoaderCircle :size="18" class="spin-icon" />正在加载 Diff</div>
+      <pre v-else class="diff-view"><code><span v-for="(line, index) in diffLines" :key="index" :class="`diff-line diff-line--${line.type}`">{{ line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' ' }} {{ line.text }}
+</span></code></pre>
+    </template>
   </ModalDialog>
 
   <ModalDialog v-if="showMembersModal" title="知识库成员" :description="selectedCollection?.name" wide @close="showMembersModal = false">

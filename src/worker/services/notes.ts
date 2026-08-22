@@ -35,6 +35,10 @@ async function getNoteRow(env: Env, noteId: string) {
   return note;
 }
 
+export async function getNoteVersionForMcp(env: Env, noteId: string) {
+  return getNoteRow(env, noteId);
+}
+
 async function filterActiveCollectionIds(env: Env, collectionIds: string[]): Promise<string[]> {
   if (collectionIds.length === 0) return [];
   const placeholders = collectionIds.map(() => "?").join(",");
@@ -388,17 +392,83 @@ export async function restoreDeletedNote(
   return { ...toSummary(await getNoteRow(env, noteId)), jobId, restoredAt };
 }
 
-export async function listVersions(env: Env, principal: AdminPrincipal, noteId: string) {
+export async function listVersions(env: Env, principal: KnowledgePrincipal, noteId: string) {
   const note = await getNoteRow(env, noteId);
-  await requireCollectionRole(env, principal, note.collectionId, "viewer");
+  await requireKnowledgeRole(env, principal, note.collectionId, "viewer");
   if (note.status === "deleted") throw new ApiError(404, "note_not_found", "文档不存在或无权访问");
   const db = createDb(env.DB);
   return db.select().from(noteVersions).where(eq(noteVersions.noteId, noteId)).orderBy(desc(noteVersions.version));
 }
 
-export async function restoreVersion(env: Env, principal: AdminPrincipal, noteId: string, sourceVersion: number) {
+export async function readNoteVersion(env: Env, principal: KnowledgePrincipal, noteId: string, version: number) {
   const note = await getNoteRow(env, noteId);
-  await requireCollectionRole(env, principal, note.collectionId, "editor");
+  await requireKnowledgeRole(env, principal, note.collectionId, "viewer");
+  if (note.status === "deleted") throw new ApiError(404, "note_not_found", "文档不存在或无权访问");
+  const markdown = await getVersionMarkdown(env, noteId, version);
+  const row = await createDb(env.DB).query.noteVersions.findFirst({
+    where: and(eq(noteVersions.noteId, noteId), eq(noteVersions.version, version)),
+  });
+  if (!row) throw new ApiError(404, "note_version_not_found", "文档版本不存在");
+  return { ...row, markdown };
+}
+
+function diffLines(before: string[], after: string[]): Array<{ type: "same" | "add" | "remove"; text: string }> {
+  const m = before.length;
+  const n = after.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i][j] = before[i] === after[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const result: Array<{ type: "same" | "add" | "remove"; text: string }> = [];
+  let i = 0;
+  let j = 0;
+  while (i < m && j < n) {
+    if (before[i] === after[j]) {
+      result.push({ type: "same", text: before[i] });
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      result.push({ type: "remove", text: before[i] });
+      i++;
+    } else {
+      result.push({ type: "add", text: after[j] });
+      j++;
+    }
+  }
+  while (i < m) { result.push({ type: "remove", text: before[i] }); i++; }
+  while (j < n) { result.push({ type: "add", text: after[j] }); j++; }
+  return result;
+}
+
+export interface DiffLine {
+  type: "same" | "add" | "remove";
+  text: string;
+}
+
+export async function diffNoteVersions(
+  env: Env,
+  principal: KnowledgePrincipal,
+  noteId: string,
+  fromVersion: number,
+  toVersion: number,
+): Promise<{ lines: DiffLine[] }> {
+  const note = await getNoteRow(env, noteId);
+  await requireKnowledgeRole(env, principal, note.collectionId, "viewer");
+  if (note.status === "deleted") throw new ApiError(404, "note_not_found", "文档不存在或无权访问");
+  const [fromMarkdown, toMarkdown] = await Promise.all([
+    getVersionMarkdown(env, noteId, fromVersion),
+    getVersionMarkdown(env, noteId, toVersion),
+  ]);
+  const before = fromMarkdown.replace(/\r\n/g, "\n").split("\n");
+  const after = toMarkdown.replace(/\r\n/g, "\n").split("\n");
+  return { lines: diffLines(before, after) };
+}
+
+export async function restoreVersion(env: Env, principal: KnowledgePrincipal, noteId: string, sourceVersion: number) {
+  const note = await getNoteRow(env, noteId);
+  await requireKnowledgeRole(env, principal, note.collectionId, "editor");
   if (note.status === "deleted") throw new ApiError(409, "note_deleted", "已删除文档不能恢复版本");
   const markdown = await getVersionMarkdown(env, noteId, sourceVersion);
   return updateNote(env, principal, noteId, note.version, markdown);

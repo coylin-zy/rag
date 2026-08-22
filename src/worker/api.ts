@@ -39,11 +39,13 @@ import {
 import { enqueueJob, listJobsForAdmin, retryJobForAdmin } from "./services/jobs";
 import {
   createNote,
+  diffNoteVersions,
   deleteNote,
   listNotes,
   listTrashedNotes,
   listVersions,
   readNoteForAdmin,
+  readNoteVersion,
   reindexNote,
   restoreDeletedNote,
   restoreVersion,
@@ -241,6 +243,17 @@ app.post("/api/v1/notes/:noteId/restore-deleted", async (c) => {
   return ok(c, await restoreDeletedNote(c.env, c.get("principal"), c.req.param("noteId"), input));
 });
 app.get("/api/v1/notes/:noteId/versions", async (c) => ok(c, await listVersions(c.env, c.get("principal"), c.req.param("noteId"))));
+app.get("/api/v1/notes/:noteId/versions/:version", async (c) => {
+  const version = z.coerce.number().int().positive().parse(c.req.param("version"));
+  return ok(c, await readNoteVersion(c.env, c.get("principal"), c.req.param("noteId"), version));
+});
+app.get("/api/v1/notes/:noteId/diff", async (c) => {
+  const input = z.object({
+    from: z.coerce.number().int().positive(),
+    to: z.coerce.number().int().positive(),
+  }).parse(Object.fromEntries(new URL(c.req.url).searchParams));
+  return ok(c, await diffNoteVersions(c.env, c.get("principal"), c.req.param("noteId"), input.from, input.to));
+});
 app.post("/api/v1/notes/:noteId/restore", async (c) => {
   const { version } = z.object({ version: z.number().int().positive() }).parse(await c.req.json());
   return ok(c, await restoreVersion(c.env, c.get("principal"), c.req.param("noteId"), version));
