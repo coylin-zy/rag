@@ -284,8 +284,14 @@ app.post("/api/v1/collections/:collectionId/export", async (c) => {
 
 app.post("/api/v1/collections/:collectionId/import/plan", async (c) => {
   const collectionId = c.req.param("collectionId");
-  const body = await c.req.json() as { files?: Array<{ relativePath: string; markdown: string }> };
-  const files = (body.files ?? []).slice(0, 500);
+  const bodySchema = z.object({
+    files: z.array(z.object({
+      relativePath: z.string().max(2048),
+      markdown: z.string().max(2 * 1024 * 1024),
+    })).max(500),
+  });
+  const body = bodySchema.parse(await c.req.json());
+  const files = body.files;
   return ok(c, await planImport(c.env, c.get("principal"), collectionId, files));
 });
 

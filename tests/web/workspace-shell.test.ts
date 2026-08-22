@@ -535,7 +535,9 @@ describe("redesigned workspace shell", () => {
     await wrapper.get("#token-expiry").setValue("");
     expect(wrapper.text()).toContain("最高权限 Token 必须设置到期时间");
     expect(wrapper.get('button[type="submit"]').attributes("disabled")).toBeDefined();
-    await wrapper.get("#token-expiry").setValue("2026-08-20T12:00");
+    const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const expiryValue = new Date(expires.getTime() - expires.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+    await wrapper.get("#token-expiry").setValue(expiryValue);
     await wrapper.get("#token-request-limit").setValue("120");
     await wrapper.get("#token-write-limit").setValue("40");
     expect(wrapper.get('button[type="submit"]').attributes("disabled")).toBeUndefined();

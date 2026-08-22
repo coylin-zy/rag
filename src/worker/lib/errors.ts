@@ -34,7 +34,15 @@ export function errorResponse(c: Context<{ Bindings: Env; Variables: AppVariable
   const requestId = c.get("requestId") ?? crypto.randomUUID();
 
   if (apiError.status >= 500) {
-    console.error(JSON.stringify({ event: "request.error", requestId, status: apiError.status, code: apiError.code }));
+    const failureKind = error instanceof Error ? "Error" : "NonError";
+    console.error(JSON.stringify({
+      event: "request.error",
+      requestId,
+      status: apiError.status,
+      code: apiError.code,
+      failureKind,
+      hasCause: Boolean(error instanceof Error && error.cause),
+    }));
   }
 
   const payload: ApiErrorEnvelope = {

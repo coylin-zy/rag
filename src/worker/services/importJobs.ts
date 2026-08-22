@@ -53,12 +53,10 @@ export async function planImport(
   for (const file of files) {
     const path = file.relativePath.replace(/\\/g, "/").replace(/^\/+/, "");
     if (!path.endsWith(".md") || path.includes("..")) continue;
-    let markdown: string;
-    try {
-      markdown = new TextDecoder().decode(file.markdown as unknown as Uint8Array ?? new TextEncoder().encode(file.markdown));
-    } catch {
-      continue;
+    if (typeof file.markdown !== "string") {
+      throw new ApiError(422, "invalid_import_file", "导入文件内容必须是 Markdown 文本");
     }
+    const markdown = file.markdown;
     const normalized = markdown.replace(/\r\n/g, "\n");
     let parsed;
     try {

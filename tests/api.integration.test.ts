@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { sha256 } from "@worker/lib/crypto";
 import type { IndexQueueMessage } from "@worker/env";
 
 import { apiRequest, createCollection, createNote, jsonInit, queueSendResponse, workerFetch } from "./helpers";
@@ -376,6 +377,34 @@ describe("management API, D1 and R2", () => {
     );
     expect(invalid.response.status).toBe(422);
     expect("error" in invalid.body && invalid.body.error.code).toBe("validation_error");
+  });
+
+  it("plans valid markdown imports and validates malformed import payloads", async () => {
+    const collection = await createCollection("Import planning");
+    const markdown = "---\ntitle: Import create\ntags: []\nstatus: published\n---\n\nIMPORT-PLAN-MARKER";
+
+    const planned = await apiRequest<{ items: Array<{ relativePath: string; action: string }> }>(
+      `/api/v1/collections/${collection.id}/import/plan`,
+      jsonInit("POST", { files: [{ relativePath: "docs/import-create.md", markdown }] }),
+    );
+    expect(planned.response.status).toBe(200);
+    expect("data" in planned.body && planned.body.data.items).toEqual([
+      { relativePath: "docs/import-create.md", action: "create", targetNoteId: null, expectedVersion: null, contentHash: await sha256(markdown) },
+    ]);
+
+    const invalidFiles = await apiRequest(
+      `/api/v1/collections/${collection.id}/import/plan`,
+      jsonInit("POST", { files: "bad" }),
+    );
+    expect(invalidFiles.response.status).toBe(422);
+    expect("error" in invalidFiles.body && invalidFiles.body.error.code).toBe("validation_error");
+
+    const invalidFile = await apiRequest(
+      `/api/v1/collections/${collection.id}/import/plan`,
+      jsonInit("POST", { files: [{ relativePath: "bad.md" }] }),
+    );
+    expect(invalidFile.response.status).toBe(422);
+    expect("error" in invalidFile.body && invalidFile.body.error.code).toBe("validation_error");
   });
 
   it("keeps client-controlled values and exception details out of structured logs", async () => {
