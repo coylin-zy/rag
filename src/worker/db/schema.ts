@@ -48,12 +48,15 @@ export const notes = sqliteTable(
     reviewedAt: text("reviewed_at"),
     reviewAfter: text("review_after"),
     supersedesJson: text("supersedes_json"),
+    externalPath: text("external_path"),
+    syncBaseHash: text("sync_base_hash"),
   },
   (table) => [
     index("idx_notes_collection_updated").on(table.collectionId, table.updatedAt),
     index("idx_notes_status").on(table.status),
     index("idx_notes_collection_deleted").on(table.collectionId, table.deletedAt),
     index("idx_notes_collection_review_after").on(table.collectionId, table.reviewAfter),
+    index("idx_notes_external_path").on(table.collectionId, table.externalPath),
   ],
 );
 

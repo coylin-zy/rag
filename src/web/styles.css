@@ -243,6 +243,11 @@ a { color: inherit; }
 .diff-line--add { display: block; color: #1a7f37; background: #e6ffec; }
 .diff-line--remove { display: block; color: #cf222e; background: #ffebe9; }
 .diff-line--same { display: block; color: #57606a; }
+.transfer-workspace { display: grid; gap: 18px; }
+.transfer-section { border: 1px solid var(--border); border-radius: 8px; padding: 14px; background: #fff; }
+.transfer-section > header { margin-bottom: 10px; font-size: 13px; }
+.transfer-hint { margin-top: 8px; color: var(--text-muted); font-size: 12px; }
+.transfer-actions { margin-top: 12px; display: flex; gap: 8px; }
 .trash-loading { min-height: 180px; display: flex; align-items: center; justify-content: center; gap: 9px; color: var(--text-muted); }
 .trash-workspace { display: grid; gap: 18px; }
 .trash-section { overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: #fff; }

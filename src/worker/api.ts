@@ -24,6 +24,7 @@ import {
 } from "./lib/auth";
 import { writeAudit } from "./lib/audit";
 import { ApiError, errorResponse } from "./lib/errors";
+import { createExportJob } from "./services/exportJobs";
 import { handleMcpRequest } from "./mcp";
 import { listAuditLogs } from "./services/audit";
 import {
@@ -37,6 +38,8 @@ import {
   upsertMember,
 } from "./services/collections";
 import { enqueueJob, listJobsForAdmin, retryJobForAdmin } from "./services/jobs";
+import { applyImportPlan } from "./services/importApply";
+import { planImport } from "./services/importJobs";
 import {
   createNote,
   diffNoteVersions,
@@ -272,6 +275,33 @@ app.post("/api/v1/search", async (c) => {
   const input = searchSchema.parse(await c.req.json());
   await Promise.all(input.collectionIds.map((id) => requireCollectionRole(c.env, c.get("principal"), id, "viewer")));
   return ok(c, await searchKnowledge(c.env, input, input.collectionIds));
+});
+
+app.post("/api/v1/collections/:collectionId/export", async (c) => {
+  const input = z.object({ includeHistory: z.boolean().default(false) }).parse(await c.req.json().catch(() => ({})));
+  return ok(c, await createExportJob(c.env, c.get("principal"), c.req.param("collectionId"), input.includeHistory));
+});
+
+app.post("/api/v1/collections/:collectionId/import/plan", async (c) => {
+  const collectionId = c.req.param("collectionId");
+  const body = await c.req.json() as { files?: Array<{ relativePath: string; markdown: string }> };
+  const files = (body.files ?? []).slice(0, 500);
+  return ok(c, await planImport(c.env, c.get("principal"), collectionId, files));
+});
+
+app.post("/api/v1/collections/:collectionId/import/apply", async (c) => {
+  const collectionId = c.req.param("collectionId");
+  const input = z.object({
+    items: z.array(z.object({
+      relativePath: z.string().max(2048),
+      action: z.enum(["create", "update", "unchanged", "conflict"]),
+      targetNoteId: z.string().uuid().nullable(),
+      expectedVersion: z.number().int().positive().nullable(),
+      contentHash: z.string(),
+    })).max(500),
+    files: z.array(z.object({ relativePath: z.string().max(2048), markdown: z.string() })).max(500),
+  }).parse(await c.req.json());
+  return ok(c, await applyImportPlan(c.env, c.get("principal"), collectionId, input.items, input.files));
 });
 
 app.get("/api/v1/proposals", async (c) => ok(c, await listProposals(c.env, c.get("principal"))));

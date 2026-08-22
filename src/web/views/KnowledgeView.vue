@@ -37,6 +37,7 @@ interface NoteDetail extends NoteSummary { markdown: string }
 interface VersionRow { noteId: string; version: number; title: string; contentHash: string; createdAt: string; createdBy: string }
 interface DiffLine { type: "same" | "add" | "remove"; text: string }
 interface MemberRow { collectionId: string; userEmail: string; role: Role; createdAt: string }
+interface ImportItemPlan { relativePath: string; action: "create" | "update" | "unchanged" | "conflict"; targetNoteId: string | null; expectedVersion: number | null; contentHash: string }
 
 const route = useRoute();
 const router = useRouter();
@@ -72,6 +73,10 @@ const diffLoading = ref(false);
 const diffFromVersion = ref(0);
 const showMembersModal = ref(false);
 const members = ref<MemberRow[]>([]);
+const showTransferModal = ref(false);
+const transferFiles = ref<Array<{ relativePath: string; markdown: string }>>([]);
+const transferPlan = ref<ImportItemPlan[]>([]);
+const transferring = ref(false);
 const memberForm = ref<{ email: string; role: Role }>({ email: "", role: "viewer" });
 const showTrashCollectionModal = ref(false);
 const trashCollectionConfirmation = ref("");
@@ -288,6 +293,67 @@ async function restoreVersion(version: number) {
 async function openMembers() {
   members.value = await api<MemberRow[]>(`/api/v1/collections/${selectedCollectionId.value}/members`);
   showMembersModal.value = true;
+}
+
+async function handleFileSelect(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  const results: Array<{ relativePath: string; markdown: string }> = [];
+  for (const file of files) {
+    if (!file.name.endsWith(".md") || file.size > 2 * 1024 * 1024) continue;
+    const text = await file.text();
+    const path = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+    results.push({ relativePath: path, markdown: text });
+  }
+  transferFiles.value = results;
+}
+
+async function planTransferImport() {
+  if (!selectedCollectionId.value || transferFiles.value.length === 0) return;
+  transferring.value = true;
+  try {
+    const result = await api<{ items: ImportItemPlan[] }>(`/api/v1/collections/${selectedCollectionId.value}/import/plan`, {
+      method: "POST",
+      ...jsonBody({ files: transferFiles.value }),
+    });
+    transferPlan.value = result.items;
+  } catch (error) {
+    toast.show(error instanceof Error ? error.message : "导入计划失败", "error");
+  } finally {
+    transferring.value = false;
+  }
+}
+
+async function applyTransferImport() {
+  if (!selectedCollectionId.value || transferPlan.value.length === 0) return;
+  transferring.value = true;
+  try {
+    const result = await api<{ applied: number; skipped: number; conflicts: string[] }>(`/api/v1/collections/${selectedCollectionId.value}/import/apply`, {
+      method: "POST",
+      ...jsonBody({ items: transferPlan.value, files: transferFiles.value }),
+    });
+    await loadNotes(selectedCollectionId.value);
+    toast.show(`已应用 ${result.applied} 个文件，跳过 ${result.skipped}`, "success");
+    transferPlan.value = [];
+    transferFiles.value = [];
+  } catch (error) {
+    toast.show(error instanceof Error ? error.message : "导入失败", "error");
+  } finally {
+    transferring.value = false;
+  }
+}
+
+async function exportCollection(includeHistory: boolean) {
+  if (!selectedCollectionId.value) return;
+  try {
+    const manifest = await api<{ manifestHash: string; objects: Array<{ logicalPath: string }> }>(`/api/v1/collections/${selectedCollectionId.value}/export`, {
+      method: "POST",
+      ...jsonBody({ includeHistory }),
+    });
+    toast.show(`导出完成，${manifest.objects.length} 个对象`, "success");
+  } catch (error) {
+    toast.show(error instanceof Error ? error.message : "导出失败", "error");
+  }
 }
 
 async function addMember() {
@@ -576,6 +642,7 @@ onBeforeUnmount(() => {
           <span class="editor-toolbar__type">Markdown</span>
           <div class="editor-actions">
             <button class="icon-button" type="button" title="版本记录" aria-label="版本记录" @click="openVersions"><History :size="18" /></button>
+            <button class="icon-button" type="button" title="导入导出" aria-label="导入导出" @click="showTransferModal = true"><FolderPlus :size="18" /></button>
             <button class="icon-button" type="button" title="重新索引" aria-label="重新索引" @click="reindexCurrentNote"><RefreshCw :size="18" /></button>
             <button class="icon-button danger-icon" type="button" title="移入回收站" aria-label="将文档移入回收站" @click="trashCurrentNote"><Trash2 :size="18" /></button>
           </div>
@@ -686,6 +753,37 @@ onBeforeUnmount(() => {
       <div class="field"><label for="collection-description">描述</label><textarea id="collection-description" v-model="collectionForm.description" class="textarea" maxlength="500" /></div>
     </form>
     <template #footer><button class="button button--secondary" type="button" @click="showCollectionModal = false">取消</button><button class="button button--primary" type="submit" form="collection-form" :disabled="creatingCollection"><span v-if="creatingCollection" class="spinner" />创建</button></template>
+  </ModalDialog>
+
+  <ModalDialog v-if="showTransferModal" title="批量导入 / 导出" :description="selectedCollection?.name" wide @close="showTransferModal = false">
+    <div class="transfer-workspace">
+      <section class="transfer-section">
+        <header><strong>Markdown 导入</strong></header>
+        <input type="file" multiple accept=".md" class="input" @change="handleFileSelect" />
+        <p v-if="transferFiles.length" class="transfer-hint">已选择 {{ transferFiles.length }} 个文件</p>
+        <div v-if="transferFiles.length && !transferPlan.length" class="transfer-actions">
+          <button class="button button--primary" type="button" :disabled="transferring || !canEdit" @click="planTransferImport"><span v-if="transferring" class="spinner" />生成 Dry-Run 计划</button>
+        </div>
+        <table v-if="transferPlan.length" class="data-table">
+          <thead><tr><th>文件</th><th>操作</th><th>目标版本</th></tr></thead>
+          <tbody><tr v-for="item in transferPlan" :key="item.relativePath">
+            <td>{{ item.relativePath }}</td>
+            <td><StatusBadge :status="item.action === 'create' ? 'draft' : item.action === 'update' ? 'ready' : item.action === 'conflict' ? 'failed' : 'queued'" /></td>
+            <td>{{ item.expectedVersion ?? '—' }}</td>
+          </tr></tbody>
+        </table>
+        <div v-if="transferPlan.length" class="transfer-actions">
+          <button class="button button--primary" type="button" :disabled="transferring" @click="applyTransferImport"><span v-if="transferring" class="spinner" />应用导入</button>
+        </div>
+      </section>
+      <section class="transfer-section">
+        <header><strong>导出当前知识库</strong></header>
+        <div class="transfer-actions">
+          <button class="button button--secondary" type="button" @click="exportCollection(false)">导出活动文档</button>
+          <button class="button button--secondary" type="button" :disabled="!canAdmin" @click="exportCollection(true)">导出完整备份（含历史）</button>
+        </div>
+      </section>
+    </div>
   </ModalDialog>
 
   <ModalDialog v-if="showNoteModal" title="新建 Markdown" description="系统会自动补充稳定 ID 和版本号。" @close="showNoteModal = false">
