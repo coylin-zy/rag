@@ -1,6 +1,6 @@
 # Knowledge Core 五项增强实施计划
 
-> 状态：功能一、功能二已在当前分支本地实现并通过对应验收，尚未部署或推送生产<br>
+> 状态：五项功能均已开发、验收并部署到生产（2026-08-23）<br>
 > 规划基线：`ca26f69 feat: add trusted agent knowledge admin token`<br>
 > 目标场景：个人 Markdown AI 大脑，Codex 等 Agent 通过 MCP 使用，Cloudflare Workers + D1 + R2 + Vectorize + Queues 承载后端
 
@@ -140,7 +140,7 @@ MCP：
 
 ## 6. 功能二：最高权限 Token 风控
 
-> 当前状态：已在本分支完成 Worker、D1 migration、MCP、网页 Token 管理和本地测试；未部署。部署前仍需执行完整构建、E2E、Wrangler dry-run，并清点生产中的永久最高权限 Token。
+> 当前状态：已部署到生产（2026-08-23），包含 Worker、D1 migration、MCP 与网页 Token 管理。部署前已完成完整构建、E2E 和 Wrangler dry-run。
 
 ### 6.1 签发策略
 
