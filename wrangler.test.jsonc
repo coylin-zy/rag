@@ -49,8 +49,8 @@
   "vars": {
     "ENVIRONMENT": "development",
     "DEV_AUTH_BYPASS": "true",
-    "BOOTSTRAP_ADMIN_EMAILS": "admin@example.com",
-    "ADMIN_LOGIN_EMAIL": "admin@example.com",
+    "BOOTSTRAP_ADMIN_EMAILS": "admin@example.com,admin@coylin.com",
+    "ADMIN_LOGIN_EMAIL": "admin@coylin.com",
     "ADMIN_LOGIN_PASSWORD_HASH": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
     "ADMIN_SESSION_SECRET": "test-session-secret-that-is-long-enough",
     "ADMIN_PROXY_SECRET": "test-proxy-secret",

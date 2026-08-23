@@ -19,7 +19,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "pnpm dev:worker",
+      command: "pnpm dev:worker:test",
       url: "http://127.0.0.1:8787/healthz",
       reuseExistingServer: true,
       timeout: 60_000,
