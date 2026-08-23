@@ -621,6 +621,7 @@ onBeforeUnmount(() => {
           <span v-else>组织 Markdown，并保持 Agent 检索来源可追溯。</span>
         </div>
         <div class="knowledge-actions">
+          <button v-if="selectedCollection" class="icon-button" type="button" title="导入导出" aria-label="导入导出" @click="showTransferModal = true"><FolderPlus :size="18" /></button>
           <button class="button button--secondary knowledge-create-collection" type="button" data-testid="create-collection-primary" @click="showCollectionModal = true"><FolderPlus :size="17" />新建知识库</button>
           <button class="button button--secondary knowledge-create-note" type="button" data-testid="create-note-primary" :disabled="!canEdit" @click="showNoteModal = true"><FilePlus2 :size="17" />新建文档</button>
           <button v-if="selectedNote" class="button button--primary knowledge-save" type="button" :disabled="!dirty || saving || !canEdit" @click="saveNote">
@@ -654,7 +655,6 @@ onBeforeUnmount(() => {
           <span class="editor-toolbar__type">Markdown</span>
           <div class="editor-actions">
             <button class="icon-button" type="button" title="版本记录" aria-label="版本记录" @click="openVersions"><History :size="18" /></button>
-            <button class="icon-button" type="button" title="导入导出" aria-label="导入导出" @click="showTransferModal = true"><FolderPlus :size="18" /></button>
             <button class="icon-button" type="button" title="重新索引" aria-label="重新索引" @click="reindexCurrentNote"><RefreshCw :size="18" /></button>
             <button class="icon-button danger-icon" type="button" title="移入回收站" aria-label="将文档移入回收站" @click="trashCurrentNote"><Trash2 :size="18" /></button>
           </div>
