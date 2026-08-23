@@ -300,6 +300,48 @@ describe("redesigned workspace shell", () => {
     wrapper.unmount();
   });
 
+  it("starts a same-origin ZIP download after preparing an export", async () => {
+    const router = createTestRouter();
+    await router.push("/knowledge/collection-export");
+    await router.isReady();
+    const store = useAppStore();
+    store.initialized = true;
+    store.collections = [{
+      id: "collection-export",
+      name: "Exportable knowledge",
+      description: "",
+      role: "admin",
+      noteCount: 0,
+      updatedAt: "2026-08-23T08:00:00.000Z",
+    }];
+    vi.mocked(api).mockImplementation(async (path: string, init: RequestInit = {}) => {
+      if (path === "/api/v1/collections/collection-export/notes") return [];
+      if (path === "/api/v1/collections/collection-export/export" && init.method === "POST") {
+        return {
+          manifestHash: "a".repeat(64),
+          objects: [{ logicalPath: "notes/example.md" }],
+          archiveName: "knowledge-core-collection-export-portable.zip",
+          downloadUrl: `/api/v1/collections/collection-export/export/archive?includeHistory=false&createdAt=${encodeURIComponent("2026-08-23T08:00:00.000Z")}&manifestHash=${"a".repeat(64)}`,
+        };
+      }
+      return [];
+    });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    const wrapper = mount(KnowledgeView, { global: { plugins: [router], stubs: { Teleport: true } } });
+    await flushPromises();
+    await wrapper.get('[title="导入导出"]').trigger("click");
+    await wrapper.get(".transfer-section .button").trigger("click");
+    await flushPromises();
+
+    expect(api).toHaveBeenCalledWith("/api/v1/collections/collection-export/export", {
+      method: "POST",
+      body: JSON.stringify({ includeHistory: false }),
+    });
+    expect(click).toHaveBeenCalledOnce();
+    wrapper.unmount();
+  });
+
   it("requires an exact name before moving a collection to trash", async () => {
     const router = createTestRouter();
     await router.push("/knowledge/collection-delete");

@@ -75,6 +75,8 @@ export function canonicalizeMarkdown(
     status?: "draft" | "published";
     reviewedAt?: string | null;
     allowReviewedAtChange?: boolean;
+    reviewAfter?: string | null;
+    allowReviewAfterChange?: boolean;
   },
 ): MarkdownDocument & { markdown: string } {
   const parsed = parseMarkdownDocument(markdown);
@@ -89,7 +91,10 @@ export function canonicalizeMarkdown(
   }
 
   const source = validateSourceMetadata(parsed.frontmatter.source);
-  const reviewedAt = identity.allowReviewedAtChange ? (submittedReviewedAt ?? null) : currentReviewedAt;
+  const reviewedAt = identity.allowReviewedAtChange ? (identity.reviewedAt ?? null) : currentReviewedAt;
+  const reviewAfter = identity.allowReviewAfterChange
+    ? (identity.reviewAfter ?? null)
+    : (parsed.frontmatter.review_after ?? null);
   const frontmatter = {
     id: identity.id,
     title: parsed.frontmatter.title,
@@ -97,7 +102,7 @@ export function canonicalizeMarkdown(
     status: identity.status ?? parsed.frontmatter.status,
     version: identity.version,
     ...(source ? { source } : {}),
-    ...(parsed.frontmatter.review_after ? { review_after: parsed.frontmatter.review_after } : {}),
+    ...(reviewAfter ? { review_after: reviewAfter } : {}),
     ...(reviewedAt ? { reviewed_at: reviewedAt } : {}),
     supersedes: parsed.frontmatter.supersedes,
   };

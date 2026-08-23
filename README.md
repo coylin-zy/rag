@@ -10,7 +10,7 @@ Knowledge Core 不是“上传文档后聊天”的成品 RAG 应用。它负责
 - 后端：Cloudflare Workers、D1、R2、Vectorize、Queues、Workers AI
 - 前端：Vue 3、TypeScript、Vite，静态部署到香港服务器
 
-> 当前代码状态（2026-08-23）：全部五项安全增强（回收站、最高权限 Token 风控、版本差异回滚、来源治理和批量导入导出）已完成开发并部署到生产。
+> 当前代码状态（2026-08-23）：核心知识库、回收站、Token 风控、版本 Diff/回滚和来源时效治理已部署到生产；当前分支补齐了批量导入幂等校验、可下载的流式 ZIP 导出和复核版本一致性，仍需通过 CI 后再部署。可中断传输任务、灾备恢复演练和 Git/Obsidian 双向同步仍属于后续范围。
 
 ## 为什么做这个项目
 
@@ -38,6 +38,7 @@ Knowledge Core 将这些信息整理为可治理的 Markdown：
 | 幂等写入 | 最高权限 MCP 写操作使用 `operation_id`，安全处理断网重试和重复提交 |
 | 权限与审计 | Viewer / Editor / Admin、知识库范围 Token、乐观锁和不可变审计事件 |
 | 管理体验 | 站内登录、桌面和 375 px 移动端响应式界面、索引任务和失败重试 |
+| 批量迁移 V1 | Markdown 多文件 dry-run/apply、服务端计划复验、同步基线与流式 ZIP 导出 |
 
 ## 架构
 
@@ -204,12 +205,14 @@ pnpm test:e2e         # Playwright 桌面与移动端流程
 pnpm deploy:check     # 部署配置和生产安全检查
 ```
 
-当前本地验收基线：
+最近一次完整本地验收基线（本轮修复前）：
 
 - Worker/API/MCP：47 / 47；
 - Web：16 / 16；
 - Playwright：桌面和移动端 2 / 2；
 - TypeScript、Vite 构建、Web 产物校验、Wrangler dry-run 和部署配置检查均通过。
+
+当前分支新增导入 apply/重复导入、历史导出校验、流式 ZIP、复核版本一致性和前端下载测试，并加入 GitHub Actions；合并前以 CI 的最新结果为准。
 
 如果 Windows 用户目录包含非 ASCII 字符导致 `workerd` 无法启动，可临时把 `TEMP` 和 `TMP` 指向纯 ASCII 路径后再运行测试。
 
@@ -241,9 +244,9 @@ pnpm deploy
 
 `db:migrate:remote` 会修改生产 D1，执行前必须确认目标账号、数据库和备份策略。生产 Secret 至少包括：
 
-- `SESSION_SECRET`
-- `ADMIN_PASSWORD_HASH`
-- `SERVER_PROXY_TOKEN`
+- `ADMIN_SESSION_SECRET`
+- `ADMIN_LOGIN_PASSWORD_HASH`
+- `ADMIN_PROXY_SECRET`
 - 可选的 `RERANK_API_KEY`
 
 ### Vue / Nginx
@@ -261,7 +264,8 @@ tar -czf knowledge-core-web.tar.gz -C dist .
 - [x] 最高权限 Token 风控
 - [x] 版本差异与定点回滚
 - [x] 来源、有效期与过期知识治理
-- [x] 可恢复的批量导入与导出
+- [x] 批量 Markdown 导入与可下载 ZIP 导出 V1
+- [ ] 可中断传输任务、完整灾备恢复验证与 Git/Obsidian 双向同步
 
 开源产品差距分析见 [OPEN_SOURCE_GAP.md](./OPEN_SOURCE_GAP.md)，产品调试与问题记录见 [tech.md](./tech.md)。
 

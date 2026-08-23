@@ -178,6 +178,7 @@ export async function createNote(
   principal: KnowledgePrincipal,
   collectionId: string,
   markdownInput: string,
+  options: { externalPath?: string } = {},
 ): Promise<NoteSummary & { jobId: string }> {
   await requireKnowledgeRole(env, principal, collectionId, "editor");
   const db = createDb(env.DB);
@@ -205,6 +206,7 @@ export async function createNote(
       updatedAt: now,
       createdBy: actor.authorId,
       updatedBy: actor.authorId,
+      ...(options.externalPath ? { externalPath: options.externalPath, syncBaseHash: contentHash } : {}),
       ...provenance,
     }),
     db.insert(noteVersions).values({
@@ -232,6 +234,12 @@ export async function updateNote(
   noteId: string,
   expectedVersion: number,
   markdownInput: string,
+  options: {
+    externalPath?: string;
+    managedReview?: { reviewedAt: string; reviewAfter: string | null };
+    auditAction?: "note.update" | "note.review";
+    auditMetadata?: Record<string, unknown>;
+  } = {},
 ): Promise<NoteSummary & { jobId: string | null }> {
   const db = createDb(env.DB);
   const current = await getNoteRow(env, noteId);
@@ -244,7 +252,10 @@ export async function updateNote(
   const submittedCurrent = canonicalizeMarkdown(markdownInput, {
     id: noteId,
     version: expectedVersion,
-    reviewedAt: current.reviewedAt,
+    reviewedAt: options.managedReview?.reviewedAt ?? current.reviewedAt,
+    allowReviewedAtChange: Boolean(options.managedReview),
+    reviewAfter: options.managedReview?.reviewAfter,
+    allowReviewAfterChange: Boolean(options.managedReview),
   });
   const storedCurrent = parseMarkdownDocument(await getVersionMarkdown(env, noteId, expectedVersion));
   const sameMetadata = submittedCurrent.frontmatter.title === storedCurrent.frontmatter.title
@@ -252,12 +263,20 @@ export async function updateNote(
     && JSON.stringify(submittedCurrent.frontmatter.tags) === JSON.stringify(storedCurrent.frontmatter.tags)
     && JSON.stringify(submittedCurrent.frontmatter.source ?? null) === JSON.stringify(storedCurrent.frontmatter.source ?? null)
     && (submittedCurrent.frontmatter.review_after ?? null) === (storedCurrent.frontmatter.review_after ?? null)
+    && (submittedCurrent.frontmatter.reviewed_at ?? null) === (storedCurrent.frontmatter.reviewed_at ?? null)
     && JSON.stringify(submittedCurrent.frontmatter.supersedes) === JSON.stringify(storedCurrent.frontmatter.supersedes);
   if (sameMetadata && submittedCurrent.body === storedCurrent.body) return { ...toSummary(current), jobId: null };
 
   const version = expectedVersion + 1;
-  await assertSupersedesTargets(env, current.collectionId, noteId, canonicalizeMarkdown(markdownInput, { id: noteId, version }).frontmatter.supersedes);
-  const document = canonicalizeMarkdown(markdownInput, { id: noteId, version, reviewedAt: current.reviewedAt });
+  const document = canonicalizeMarkdown(markdownInput, {
+    id: noteId,
+    version,
+    reviewedAt: options.managedReview?.reviewedAt ?? current.reviewedAt,
+    allowReviewedAtChange: Boolean(options.managedReview),
+    reviewAfter: options.managedReview?.reviewAfter,
+    allowReviewAfterChange: Boolean(options.managedReview),
+  });
+  await assertSupersedesTargets(env, current.collectionId, noteId, document.frontmatter.supersedes);
   const contentHash = await sha256(document.markdown);
   const provenance = provenanceValues(document);
 
@@ -283,6 +302,7 @@ export async function updateNote(
           contentHash,
           updatedAt: now,
           updatedBy: actor.authorId,
+          ...(options.externalPath ? { externalPath: options.externalPath, syncBaseHash: contentHash } : {}),
           ...provenance,
         })
         .where(and(eq(notes.id, noteId), eq(notes.version, expectedVersion))),
@@ -303,7 +323,15 @@ export async function updateNote(
 
   await refreshCurrentObject(env, current.collectionId, noteId, version, document.markdown, contentHash);
   const jobId = await enqueueJob(env, { type: "index", noteId, version });
-  await writeAudit(env, { actorType: actor.actorType, actorId: actor.actorId, action: "note.update", resourceType: "note", resourceId: noteId, collectionIds: [current.collectionId], metadata: { version } });
+  await writeAudit(env, {
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    action: options.auditAction ?? "note.update",
+    resourceType: "note",
+    resourceId: noteId,
+    collectionIds: [current.collectionId],
+    metadata: { version, ...(options.auditMetadata ?? {}) },
+  });
   return { ...toSummary(await getNoteRow(env, noteId)), jobId };
 }
 
@@ -528,29 +556,11 @@ export async function reviewNote(
     throw new ApiError(409, "version_conflict", `文档已更新到版本 ${note.version}`);
   }
 
-  const now = nowIso();
-  const actor = principalActor(principal);
-  const result = await env.DB.prepare(`
-    UPDATE notes SET reviewed_at = ?, review_after = ?, updated_at = ?, updated_by = ?
-    WHERE id = ? AND version = ? AND status != 'deleted'
-  `).bind(now, reviewAfter ?? null, now, actor.authorId, noteId, expectedVersion).run();
-  if (Number(result.meta.changes) !== 1) {
-    throw new ApiError(409, "version_conflict", "文档在复核前已被其他操作更新");
-  }
-
-  // Update R2 frontmatter to match
+  const reviewedAt = nowIso();
   const markdown = await getVersionMarkdown(env, noteId, expectedVersion);
-  const document = canonicalizeMarkdown(markdown, { id: noteId, version: expectedVersion, reviewedAt: now, allowReviewedAtChange: true });
-  await refreshCurrentObject(env, note.collectionId, noteId, expectedVersion, document.markdown, await sha256(document.markdown));
-
-  await writeAudit(env, {
-    actorType: actor.actorType,
-    actorId: actor.actorId,
-    action: "note.review",
-    resourceType: "note",
-    resourceId: noteId,
-    collectionIds: [note.collectionId],
-    metadata: { version: expectedVersion, reviewedAt: now, reviewAfter: reviewAfter ?? null },
+  return updateNote(env, principal, noteId, expectedVersion, markdown, {
+    managedReview: { reviewedAt, reviewAfter: reviewAfter ?? null },
+    auditAction: "note.review",
+    auditMetadata: { reviewedAt, reviewAfter: reviewAfter ?? null, reviewedVersion: expectedVersion },
   });
-  return toSummary(await getNoteRow(env, noteId));
 }

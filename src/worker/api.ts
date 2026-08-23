@@ -24,7 +24,7 @@ import {
 } from "./lib/auth";
 import { writeAudit } from "./lib/audit";
 import { ApiError, errorResponse } from "./lib/errors";
-import { createExportJob } from "./services/exportJobs";
+import { createExportArchive, createExportJob } from "./services/exportJobs";
 import { handleMcpRequest } from "./mcp";
 import { listAuditLogs } from "./services/audit";
 import {
@@ -281,6 +281,29 @@ app.post("/api/v1/collections/:collectionId/export", async (c) => {
   const input = z.object({ includeHistory: z.boolean().default(false) }).parse(await c.req.json().catch(() => ({})));
   return ok(c, await createExportJob(c.env, c.get("principal"), c.req.param("collectionId"), input.includeHistory));
 });
+app.get("/api/v1/collections/:collectionId/export/archive", async (c) => {
+  const { includeHistory, createdAt, manifestHash } = z.object({
+    includeHistory: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+    createdAt: z.string().datetime(),
+    manifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+  }).parse(c.req.query());
+  const archive = await createExportArchive(
+    c.env,
+    c.get("principal"),
+    c.req.param("collectionId"),
+    includeHistory,
+    createdAt,
+    manifestHash,
+  );
+  c.executionCtx.waitUntil(archive.completed);
+  return new Response(archive.readable, {
+    headers: {
+      "cache-control": "no-store",
+      "content-disposition": `attachment; filename="${archive.result.archiveName}"`,
+      "content-type": "application/zip",
+    },
+  });
+});
 
 app.post("/api/v1/collections/:collectionId/import/plan", async (c) => {
   const collectionId = c.req.param("collectionId");
@@ -288,7 +311,7 @@ app.post("/api/v1/collections/:collectionId/import/plan", async (c) => {
     files: z.array(z.object({
       relativePath: z.string().max(2048),
       markdown: z.string().max(2 * 1024 * 1024),
-    })).max(500),
+    })).min(1).max(500),
   });
   const body = bodySchema.parse(await c.req.json());
   const files = body.files;
@@ -303,9 +326,12 @@ app.post("/api/v1/collections/:collectionId/import/apply", async (c) => {
       action: z.enum(["create", "update", "unchanged", "conflict"]),
       targetNoteId: z.string().uuid().nullable(),
       expectedVersion: z.number().int().positive().nullable(),
-      contentHash: z.string(),
-    })).max(500),
-    files: z.array(z.object({ relativePath: z.string().max(2048), markdown: z.string() })).max(500),
+      contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    })).min(1).max(500),
+    files: z.array(z.object({
+      relativePath: z.string().max(2048),
+      markdown: z.string().max(2 * 1024 * 1024),
+    })).min(1).max(500),
   }).parse(await c.req.json());
   return ok(c, await applyImportPlan(c.env, c.get("principal"), collectionId, input.items, input.files));
 });

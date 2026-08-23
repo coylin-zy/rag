@@ -4,7 +4,7 @@
 > 更新日期：2026-08-10<br>
 > 技术栈：Vue 3 + TypeScript + Hono + Cloudflare Workers + R2 + D1 + Vectorize + Queues + MCP
 
-> 二期的五项安全增强（回收站、最高权限 Token 风控、版本 Diff/回滚、来源时效、Markdown 导入导出）已拆成独立实施路线图，见 [ROADMAP_5_FEATURES.md](./ROADMAP_5_FEATURES.md)。五项功能均已开发、验收并部署到生产。
+> 二期增强见 [ROADMAP_5_FEATURES.md](./ROADMAP_5_FEATURES.md)。回收站、Token 风控、版本 Diff/回滚和来源时效已部署；当前分支补齐批量导入与流式 ZIP 导出 V1，完整可恢复传输任务和灾备恢复演练仍待实现。
 
 ## 1. 项目定位
 
@@ -328,7 +328,8 @@ Worker 后端没有“给服务器分配多少内存”的配置，持久数据�
 
 - [x] 回收站、知识库/文档可恢复软删除与 MCP 恢复工具（已部署到生产）。
 - [x] 最高权限 Token 风控：短期过期、请求/写入限额、IP 网段审计、幂等写回执、用量查询和 bootstrap 紧急撤销（已部署到生产）。
-- [ ] Markdown ZIP/Git 导入导出与 Obsidian 工作流。
+- [x] Markdown 多文件 dry-run/apply 与流式 ZIP 导出 V1（当前分支，待 CI 和部署）。
+- [ ] 可中断传输任务、完整灾备恢复验证、Git 导入导出与 Obsidian 工作流。
 - [ ] 附件、图片和文档间双向链接。
 - [ ] 搜索评测集、命中反馈和模型版本对比。
 - [ ] 版本差异、归档/保留策略和按 Token 的操作/用量统计。

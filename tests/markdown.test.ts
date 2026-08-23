@@ -38,6 +38,24 @@ describe("Markdown frontmatter", () => {
     expect(parseMarkdownDocument(result.markdown).frontmatter.version).toBe(3);
   });
 
+  it("only changes review metadata through the managed review override", () => {
+    const submitted = "---\ntitle: 待复核\nreviewed_at: 2026-01-01T00:00:00.000Z\nreview_after: 2026-02-01T00:00:00.000Z\n---\n\n正文";
+    expect(() => canonicalizeMarkdown(submitted, { id, version: 1, reviewedAt: null }))
+      .toThrowError(expect.objectContaining({ code: "reviewed_at_managed" }));
+
+    const reviewedAt = "2026-08-23T12:00:00.000Z";
+    const result = canonicalizeMarkdown(submitted, {
+      id,
+      version: 2,
+      reviewedAt,
+      allowReviewedAtChange: true,
+      reviewAfter: null,
+      allowReviewAfterChange: true,
+    });
+    expect(result.frontmatter.reviewed_at).toBe(reviewedAt);
+    expect(result.frontmatter.review_after).toBeUndefined();
+  });
+
   it("rejects missing metadata, empty bodies and identity changes", () => {
     expect(() => parseMarkdownDocument("# no metadata")).toThrow(ApiError);
     expect(() => parseMarkdownDocument("---\ntitle: empty\n---\n")).toThrow(ApiError);

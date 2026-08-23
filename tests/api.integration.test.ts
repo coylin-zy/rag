@@ -379,18 +379,116 @@ describe("management API, D1 and R2", () => {
     expect("error" in invalid.body && invalid.body.error.code).toBe("validation_error");
   });
 
-  it("plans valid markdown imports and validates malformed import payloads", async () => {
+  it("applies imports idempotently, updates the sync baseline and rejects stale plans", async () => {
+    vi.spyOn(env.INDEX_QUEUE, "send").mockResolvedValue(queueSendResponse());
     const collection = await createCollection("Import planning");
     const markdown = "---\ntitle: Import create\ntags: []\nstatus: published\n---\n\nIMPORT-PLAN-MARKER";
 
-    const planned = await apiRequest<{ items: Array<{ relativePath: string; action: string }> }>(
+    type PlanItem = {
+      relativePath: string;
+      action: "create" | "update" | "unchanged" | "conflict";
+      targetNoteId: string | null;
+      expectedVersion: number | null;
+      contentHash: string;
+    };
+    const files = [{ relativePath: "docs/import-create.md", markdown }];
+    const planned = await apiRequest<{ items: PlanItem[] }>(
       `/api/v1/collections/${collection.id}/import/plan`,
-      jsonInit("POST", { files: [{ relativePath: "docs/import-create.md", markdown }] }),
+      jsonInit("POST", { files }),
     );
     expect(planned.response.status).toBe(200);
-    expect("data" in planned.body && planned.body.data.items).toEqual([
-      { relativePath: "docs/import-create.md", action: "create", targetNoteId: null, expectedVersion: null, contentHash: await sha256(markdown) },
-    ]);
+    if (!("data" in planned.body)) throw new Error("Missing import plan");
+    expect(planned.body.data.items).toEqual([{
+      relativePath: "docs/import-create.md",
+      action: "create",
+      targetNoteId: null,
+      expectedVersion: null,
+      contentHash: await sha256(markdown),
+    }]);
+
+    const applied = await apiRequest<{ applied: number; skipped: number; conflicts: string[] }>(
+      `/api/v1/collections/${collection.id}/import/apply`,
+      jsonInit("POST", { items: planned.body.data.items, files }),
+    );
+    expect(applied.response.status).toBe(200);
+    expect("data" in applied.body && applied.body.data).toEqual({ applied: 1, skipped: 0, conflicts: [] });
+
+    const imported = await env.DB.prepare(`
+      SELECT id, version, external_path AS externalPath,
+             content_hash AS contentHash, sync_base_hash AS syncBaseHash
+      FROM notes WHERE collection_id = ? AND external_path = ?
+    `).bind(collection.id, "docs/import-create.md").first<{
+      id: string;
+      version: number;
+      externalPath: string;
+      contentHash: string;
+      syncBaseHash: string;
+    }>();
+    expect(imported).toMatchObject({ version: 1, externalPath: "docs/import-create.md" });
+    expect(imported?.syncBaseHash).toBe(imported?.contentHash);
+
+    const unchanged = await apiRequest<{ items: PlanItem[] }>(
+      `/api/v1/collections/${collection.id}/import/plan`,
+      jsonInit("POST", { files }),
+    );
+    expect("data" in unchanged.body && unchanged.body.data.items[0]).toMatchObject({
+      action: "unchanged",
+      targetNoteId: imported?.id,
+      expectedVersion: 1,
+    });
+
+    const nextMarkdown = markdown.replace("IMPORT-PLAN-MARKER", "IMPORT-UPDATED-MARKER");
+    const nextFiles = [{ relativePath: "docs/import-create.md", markdown: nextMarkdown }];
+    const updatePlan = await apiRequest<{ items: PlanItem[] }>(
+      `/api/v1/collections/${collection.id}/import/plan`,
+      jsonInit("POST", { files: nextFiles }),
+    );
+    if (!("data" in updatePlan.body)) throw new Error("Missing update import plan");
+    expect(updatePlan.body.data.items[0]).toMatchObject({ action: "update", expectedVersion: 1 });
+
+    const staleApply = await apiRequest(
+      `/api/v1/collections/${collection.id}/import/apply`,
+      jsonInit("POST", {
+        items: updatePlan.body.data.items.map((item) => ({ ...item, contentHash: "0".repeat(64) })),
+        files: nextFiles,
+      }),
+    );
+    expect(staleApply.response.status).toBe(409);
+    expect("error" in staleApply.body && staleApply.body.error.code).toBe("import_plan_stale");
+
+    const updated = await apiRequest<{ applied: number; skipped: number; conflicts: string[] }>(
+      `/api/v1/collections/${collection.id}/import/apply`,
+      jsonInit("POST", { items: updatePlan.body.data.items, files: nextFiles }),
+    );
+    expect("data" in updated.body && updated.body.data).toEqual({ applied: 1, skipped: 0, conflicts: [] });
+    const updatedRow = await env.DB.prepare(`
+      SELECT version, content_hash AS contentHash, sync_base_hash AS syncBaseHash
+      FROM notes WHERE id = ?
+    `).bind(imported?.id).first<{ version: number; contentHash: string; syncBaseHash: string }>();
+    expect(updatedRow).toMatchObject({ version: 2 });
+    expect(updatedRow?.syncBaseHash).toBe(updatedRow?.contentHash);
+
+    const importedDetail = await apiRequest<{ markdown: string }>(`/api/v1/notes/${imported?.id}`);
+    if (!("data" in importedDetail.body)) throw new Error("Missing imported note detail");
+    await apiRequest(
+      `/api/v1/notes/${imported?.id}`,
+      jsonInit("PUT", {
+        markdown: importedDetail.body.data.markdown.replace("IMPORT-UPDATED-MARKER", "LOCAL-EDIT-MARKER"),
+      }, { "if-match": '"2"' }),
+    );
+    const conflictPlan = await apiRequest<{ items: PlanItem[] }>(
+      `/api/v1/collections/${collection.id}/import/plan`,
+      jsonInit("POST", {
+        files: [{
+          relativePath: "docs/import-create.md",
+          markdown: nextMarkdown.replace("IMPORT-UPDATED-MARKER", "REMOTE-EDIT-MARKER"),
+        }],
+      }),
+    );
+    expect("data" in conflictPlan.body && conflictPlan.body.data.items[0]).toMatchObject({
+      action: "conflict",
+      expectedVersion: 3,
+    });
 
     const invalidFiles = await apiRequest(
       `/api/v1/collections/${collection.id}/import/plan`,
@@ -405,6 +503,115 @@ describe("management API, D1 and R2", () => {
     );
     expect(invalidFile.response.status).toBe(422);
     expect("error" in invalidFile.body && invalidFile.body.error.code).toBe("validation_error");
+
+    const traversalPath = await apiRequest(
+      `/api/v1/collections/${collection.id}/import/plan`,
+      jsonInit("POST", { files: [{ relativePath: "../outside.md", markdown }] }),
+    );
+    expect(traversalPath.response.status).toBe(422);
+    expect("error" in traversalPath.body && traversalPath.body.error.code).toBe("invalid_import_path");
+
+    const duplicatePaths = await apiRequest(
+      `/api/v1/collections/${collection.id}/import/plan`,
+      jsonInit("POST", { files: [files[0], files[0]] }),
+    );
+    expect(duplicatePaths.response.status).toBe(422);
+    expect("error" in duplicatePaths.body && duplicatePaths.body.error.code).toBe("duplicate_import_path");
+  });
+
+  it("streams portable and historical ZIP exports with version-specific checksums", async () => {
+    vi.spyOn(env.INDEX_QUEUE, "send").mockResolvedValue(queueSendResponse());
+    const collection = await createCollection("Export archive");
+    const markdown = "---\ntitle: Exported note\ntags: []\nstatus: published\n---\n\nEXPORT-V1";
+    const files = [{ relativePath: "docs/exported.md", markdown }];
+    const plan = await apiRequest<{ items: Array<Record<string, unknown>> }>(
+      `/api/v1/collections/${collection.id}/import/plan`,
+      jsonInit("POST", { files }),
+    );
+    if (!("data" in plan.body)) throw new Error("Missing export fixture plan");
+    await apiRequest(
+      `/api/v1/collections/${collection.id}/import/apply`,
+      jsonInit("POST", { items: plan.body.data.items, files }),
+    );
+    const note = await env.DB.prepare("SELECT id FROM notes WHERE collection_id = ? AND external_path = ?")
+      .bind(collection.id, "docs/exported.md").first<{ id: string }>();
+    if (!note) throw new Error("Missing imported note");
+    const detail = await apiRequest<{ markdown: string }>(`/api/v1/notes/${note.id}`);
+    if (!("data" in detail.body)) throw new Error("Missing imported note detail");
+    await apiRequest(
+      `/api/v1/notes/${note.id}`,
+      jsonInit("PUT", { markdown: detail.body.data.markdown.replace("EXPORT-V1", "EXPORT-V2") }, { "if-match": '"1"' }),
+    );
+
+    const prepared = await apiRequest<{
+      downloadUrl: string;
+      archiveName: string;
+      objects: Array<{ logicalPath: string; sha256: string }>;
+    }>(`/api/v1/collections/${collection.id}/export`, jsonInit("POST", { includeHistory: true }));
+    expect(prepared.response.status).toBe(200);
+    if (!("data" in prepared.body)) throw new Error("Missing export manifest");
+    expect(prepared.body.data.archiveName).toMatch(/-backup\.zip$/);
+    expect(prepared.body.data.objects.map((item) => item.logicalPath)).toEqual(expect.arrayContaining([
+      "notes/docs/exported.md",
+      `history/${note.id}/1.md`,
+      `history/${note.id}/2.md`,
+    ]));
+    const historyHashes = prepared.body.data.objects
+      .filter((item) => item.logicalPath.startsWith(`history/${note.id}/`))
+      .map((item) => item.sha256);
+    expect(new Set(historyHashes).size).toBe(2);
+
+    const tamperedDownload = await workerFetch(
+      prepared.body.data.downloadUrl.replace(/manifestHash=[a-f0-9]{64}/, `manifestHash=${"0".repeat(64)}`),
+    );
+    expect(tamperedDownload.status).toBe(409);
+    expect((await tamperedDownload.json() as { error: { code: string } }).error.code).toBe("export_plan_stale");
+
+    const archive = await workerFetch(prepared.body.data.downloadUrl);
+    expect(archive.status).toBe(200);
+    expect(archive.headers.get("content-type")).toBe("application/zip");
+    expect(archive.headers.get("content-disposition")).toContain(prepared.body.data.archiveName);
+    const bytes = new Uint8Array(await archive.arrayBuffer());
+    expect(Array.from(bytes.slice(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);
+    const archiveText = new TextDecoder().decode(bytes);
+    expect(archiveText).toContain("manifest.json");
+    expect(archiveText).toContain("notes/docs/exported.md");
+    expect(archiveText).toContain(`history/${note.id}/1.md`);
+    expect(archiveText).toContain("EXPORT-V1");
+    expect(archiveText).toContain("EXPORT-V2");
+  });
+
+  it("records a review as a new immutable version with matching D1 and R2 metadata", async () => {
+    vi.spyOn(env.INDEX_QUEUE, "send").mockResolvedValue(queueSendResponse());
+    const collection = await createCollection("Review consistency");
+    const created = await createNote(collection.id, { title: "Review me", body: "REVIEW-BODY" });
+    const reviewAfter = "2026-12-01T00:00:00.000Z";
+    const reviewed = await apiRequest<{ version: number; reviewedAt: string; reviewAfter: string }>(
+      `/api/v1/notes/${created.note.id}/review`,
+      jsonInit("POST", { expectedVersion: 1, reviewAfter }),
+    );
+    expect(reviewed.response.status).toBe(200);
+    if (!("data" in reviewed.body)) throw new Error("Missing reviewed note");
+    expect(reviewed.body.data).toMatchObject({ version: 2, reviewAfter });
+    expect(Number.isNaN(Date.parse(reviewed.body.data.reviewedAt))).toBe(false);
+
+    const detail = await apiRequest<{ markdown: string; version: number }>(`/api/v1/notes/${created.note.id}`);
+    if (!("data" in detail.body)) throw new Error("Missing reviewed note detail");
+    expect(detail.body.data.version).toBe(2);
+    expect(detail.body.data.markdown).toContain("review_after:");
+    expect(detail.body.data.markdown).toContain(reviewAfter);
+    expect(detail.body.data.markdown).toContain("reviewed_at:");
+    expect(detail.body.data.markdown).toContain(reviewed.body.data.reviewedAt);
+    const versionOne = await env.NOTES.get(`versions/${collection.id}/${created.note.id}/1.md`);
+    const versionTwo = await env.NOTES.get(`versions/${collection.id}/${created.note.id}/2.md`);
+    expect(await versionOne?.text()).not.toContain("reviewed_at:");
+    expect(await versionTwo?.text()).toBe(detail.body.data.markdown);
+    const row = await env.DB.prepare("SELECT content_hash AS contentHash FROM notes WHERE id = ?")
+      .bind(created.note.id).first<{ contentHash: string }>();
+    expect(versionTwo?.customMetadata?.sha256).toBe(row?.contentHash);
+    const audit = await env.DB.prepare("SELECT action FROM audit_logs WHERE resource_id = ? AND action = 'note.review'")
+      .bind(created.note.id).first<{ action: string }>();
+    expect(audit).toEqual({ action: "note.review" });
   });
 
   it("keeps client-controlled values and exception details out of structured logs", async () => {

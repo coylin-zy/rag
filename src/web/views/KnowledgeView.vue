@@ -346,11 +346,23 @@ async function applyTransferImport() {
 async function exportCollection(includeHistory: boolean) {
   if (!selectedCollectionId.value) return;
   try {
-    const manifest = await api<{ manifestHash: string; objects: Array<{ logicalPath: string }> }>(`/api/v1/collections/${selectedCollectionId.value}/export`, {
+    const manifest = await api<{
+      manifestHash: string;
+      objects: Array<{ logicalPath: string }>;
+      archiveName: string;
+      downloadUrl: string;
+    }>(`/api/v1/collections/${selectedCollectionId.value}/export`, {
       method: "POST",
       ...jsonBody({ includeHistory }),
     });
-    toast.show(`导出完成，${manifest.objects.length} 个对象`, "success");
+    const download = document.createElement("a");
+    download.href = manifest.downloadUrl;
+    download.download = manifest.archiveName;
+    download.hidden = true;
+    document.body.append(download);
+    download.click();
+    download.remove();
+    toast.show(`ZIP 下载已开始，共 ${manifest.objects.length} 个 Markdown 对象`, "success");
   } catch (error) {
     toast.show(error instanceof Error ? error.message : "导出失败", "error");
   }
@@ -780,7 +792,7 @@ onBeforeUnmount(() => {
         <header><strong>导出当前知识库</strong></header>
         <div class="transfer-actions">
           <button class="button button--secondary" type="button" @click="exportCollection(false)">导出活动文档</button>
-          <button class="button button--secondary" type="button" :disabled="!canAdmin" @click="exportCollection(true)">导出完整备份（含历史）</button>
+          <button class="button button--secondary" type="button" :disabled="!canAdmin" @click="exportCollection(true)">导出活动文档和历史版本</button>
         </div>
       </section>
     </div>
