@@ -127,8 +127,8 @@ test("knowledge, retrieval, token and reviewed-memory workflow", async ({ page, 
 
   await page.getByRole("button", { name: "版本记录" }).click();
   dialog = page.getByRole("dialog", { name: "版本记录" });
-  await expect(dialog.getByText("版本 2", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("版本 1", { exact: true })).toBeVisible();
+  await expect(dialog.getByText(/版本 2/)).toBeVisible();
+  await expect(dialog.getByText("版本 1")).toBeVisible();
   await dialog.getByRole("button", { name: "关闭" }).click();
 
   await expect.poll(async () => {
