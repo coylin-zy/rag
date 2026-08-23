@@ -10,7 +10,7 @@ Knowledge Core 不是“上传文档后聊天”的成品 RAG 应用。它负责
 - 后端：Cloudflare Workers、D1、R2、Vectorize、Queues、Workers AI
 - 前端：Vue 3、TypeScript、Vite，静态部署到香港服务器
 
-> 当前代码状态（2026-08-20）：基础知识库已经上线；回收站与最高权限 Token 风控已在本仓库完成开发和本地验收，但尚未部署到生产。生产站点不应被视为已经包含这两项新能力。
+> 当前代码状态（2026-08-23）：基础知识库已经上线；回收站、Token 风控、版本差异回滚、来源治理和批量导入导出均已在本地完成开发和验收，但尚未部署到生产。生产站点不应被视为已经包含这些新能力。
 
 ## 为什么做这个项目
 
@@ -206,7 +206,7 @@ pnpm deploy:check     # 部署配置和生产安全检查
 
 当前本地验收基线：
 
-- Worker/API/MCP：46 / 46；
+- Worker/API/MCP：47 / 47；
 - Web：16 / 16；
 - Playwright：桌面和移动端 2 / 2；
 - TypeScript、Vite 构建、Web 产物校验、Wrangler dry-run 和部署配置检查均通过。
@@ -259,9 +259,9 @@ tar -czf knowledge-core-web.tar.gz -C dist .
 
 - [x] 可恢复删除与回收站（代码完成，尚未部署）
 - [x] 最高权限 Token 风控（代码完成，尚未部署）
-- [ ] 版本差异与定点回滚
-- [ ] 来源、有效期与过期知识治理
-- [ ] 可恢复的批量导入与导出
+- [x] 版本差异与定点回滚（代码完成，尚未部署）
+- [x] 来源、有效期与过期知识治理（代码完成，尚未部署）
+- [x] 可恢复的批量导入与导出（代码完成，尚未部署）
 
 开源产品差距分析见 [OPEN_SOURCE_GAP.md](./OPEN_SOURCE_GAP.md)，产品调试与问题记录见 [tech.md](./tech.md)。
 
