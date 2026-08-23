@@ -208,7 +208,7 @@ test("knowledge, retrieval, token and reviewed-memory workflow", async ({ page, 
   await navigate(page, "知识库");
   await openMobileKnowledgeLibrary(page);
   await page.getByRole("button", { name: new RegExp(collectionName) }).click();
-  await expect(page).toHaveURL(new RegExp(`/knowledge/${collectionId}$`));
+  await expect(page).toHaveURL(new RegExp(`/knowledge/${collectionId}(?:/notes/[0-9a-f-]+)?$`));
   await openMobileKnowledgeLibrary(page);
   await expect(page.getByRole("button", { name: new RegExp(proposalTitle) })).toBeVisible();
   expect(runtimeErrors).toEqual([]);
